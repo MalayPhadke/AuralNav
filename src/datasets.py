@@ -1,4 +1,3 @@
-import nussl
 import json
 import os
 import constants
@@ -9,7 +8,7 @@ import warnings
 
 from torch.utils.data import Dataset
 
-from nussl.core import AudioSignal
+from audio_signal import AudioSignal
 import transforms as tfm
 import tqdm
 
@@ -343,7 +342,8 @@ class DataSetException(Exception):
 
 
 class BufferData(BaseDataset):
-    def __init__(self, folder, to_disk=False, transform=None):
+    def __init__(self, folder, to_disk=False, transform=None, sample_rate=constants.RESAMPLE_RATE):
+        self.sample_rate = sample_rate
         """
 
         Args:
@@ -372,7 +372,7 @@ class BufferData(BaseDataset):
             if not os.path.exists(constants.DIR_DATASET_ITEMS):
                 os.mkdir(constants.DIR_DATASET_ITEMS)
 
-        super().__init__(folder=folder, transform=transform)
+        super().__init__(folder=folder, transform=transform, cache_populated=False, sample_rate=sample_rate)
 
     def get_items(self, folder):
         """
@@ -425,6 +425,22 @@ class BufferData(BaseDataset):
         output = item.copy()
         prev_state, new_state = output['prev_state'], output['new_state']
 
+        # Check if prev_state is a dictionary and convert to AudioSignal if needed
+        if isinstance(prev_state, dict) and 'audio' in prev_state:
+            audio_data = np.asarray(prev_state['audio'])
+            prev_state = AudioSignal(
+                audio_data_array=audio_data,
+                sample_rate=self.sample_rate
+            )
+
+        # Check if new_state is a dictionary and convert to AudioSignal if needed
+        if isinstance(new_state, dict) and 'audio' in new_state:
+            audio_data = np.asarray(new_state['audio'])
+            new_state = AudioSignal(
+                audio_data_array=audio_data,
+                sample_rate=self.sample_rate
+            )
+
         # convert to output dict format
         del output['prev_state'], output['new_state']
         output['prev_state'], output['new_state'] = prev_state, new_state
@@ -458,7 +474,7 @@ class BufferData(BaseDataset):
                 self.last_ptr = 0
                 self.full_buffer = True
 
-    def write_buffer_data(self, prev_state, action, reward, new_state, agent_info, episode, step):
+    def write_buffer_data(self, prev_state_dict, action, reward, new_state_dict, agent_info, episode, step, sample_rate):
         """
         Writes states (AudioSignal objects) to .wav files and stores this buffer data
         in json files with the states keys pointing to the .wav files. The json files
@@ -487,21 +503,24 @@ class BufferData(BaseDataset):
             self.metadata[episode] = 1
         else:
             self.metadata[episode] += 1
-
-        agent_loc, cur_angle = agent_info
+        
+        # print(agent_info)
+        agent_loc = agent_info['agent_loc']
+        cur_angle = agent_info['cur_angle']
         agent_info = np.append(agent_loc, cur_angle)  # Jut make it a single list to keep things simple
         # create buffer dictionary
+        # Store the original dictionary states, as transforms/model might expect this structure
         buffer_dict = {
-            'prev_state': prev_state,
+            'prev_state': prev_state_dict, # This is an observation dictionary
             'action': action,
             'reward': reward,
-            'new_state': new_state,
+            'new_state': new_state_dict,   # This is an observation dictionary
             'agent_info': agent_info
-        }
+        }    
         self.append(buffer_dict)
 
         # write data for inspection
-        if self.to_disk and step == 1:
+        if self.to_disk:
             # Unique file names for each state
             cur_file = str(episode) + '-' + str(step)
             prev_state_file_path = os.path.join(
@@ -514,30 +533,70 @@ class BufferData(BaseDataset):
                 constants.DIR_DATASET_ITEMS, cur_file + '.json'
             )
 
-            prev_state.write_audio_to_file(prev_state_file_path)
-            new_state.write_audio_to_file(new_state_file_path)
+            # Ensure parent directories exist
+            os.makedirs(constants.DIR_PREV_STATES, exist_ok=True)
+            os.makedirs(constants.DIR_NEW_STATES, exist_ok=True)
+            os.makedirs(constants.DIR_DATASET_ITEMS, exist_ok=True)
 
-            # write to json
-            buffer_dict_json = {
-                'prev_state': prev_state_file_path,
-                'action': action,
-                'reward': reward,
-                'new_state': new_state_file_path,
-            }
+            # Create AudioSignal objects for writing to disk
+            prev_audio_data = prev_state_dict.get('audio')
+            new_audio_data = new_state_dict.get('audio')
 
-            with open(dataset_json_file_path, 'w') as json_file:
-                json.dump(buffer_dict_json, json_file)
+            if prev_audio_data is not None:
+                prev_audio_signal = AudioSignal(audio_data_array=prev_audio_data, sample_rate=sample_rate)
+                prev_audio_signal.write_audio_to_file(prev_state_file_path)
+        
+            if new_audio_data is not None:
+                new_audio_signal = AudioSignal(audio_data_array=new_audio_data, sample_rate=sample_rate)
+                new_audio_signal.write_audio_to_file(new_state_file_path)
+
+                # write to json (typically if new_state audio was processed)
+                buffer_dict_json = {
+                    'prev_state': prev_state_file_path, # Path will exist, file might not if prev_audio_data was None
+                    'action': int(action) if isinstance(action, np.integer) else action,
+                    'reward': float(reward) if isinstance(reward, np.floating) else reward,
+                    'new_state': new_state_file_path,   # Path will exist, file might not if new_audio_data was None (though this block implies it's not None)
+                    'agent_info': agent_info.tolist()
+                }
+
+                with open(dataset_json_file_path, 'w') as json_file:
+                    # print(buffer_dict_json)
+                    json.dump(buffer_dict_json, json_file)
 
 
 class RLDataset(IterableDataset):
     """
     Dataset which gets updated as buffer gets filled
     """
-    def __init__(self, buffer, sample_size):
+    def __init__(self, buffer, sample_size, sample_rate):
         self.buffer = buffer
         self.sample_size = sample_size
+        self.sample_rate = sample_rate
 
     def __iter__(self):
         batch_indices = self.buffer.random_sample(self.sample_size)
         for index in batch_indices:
-            yield self.buffer[index]
+            raw_item = self.buffer[index]
+            # Create a shallow copy to modify before yielding,
+            # without altering the original item in the buffer.
+            item_to_yield = raw_item.copy()
+
+            # Convert prev_state if it's a dictionary containing audio data
+            prev_state_val = item_to_yield.get('prev_state')
+            if isinstance(prev_state_val, dict) and 'audio' in prev_state_val:
+                audio_data = np.asarray(prev_state_val['audio'])
+                item_to_yield['prev_state'] = AudioSignal(
+                    audio_data_array=audio_data,
+                    sample_rate=self.sample_rate
+                )
+
+            # Convert new_state if it's a dictionary containing audio data
+            new_state_val = item_to_yield.get('new_state')
+            if isinstance(new_state_val, dict) and 'audio' in new_state_val:
+                audio_data = np.asarray(new_state_val['audio'])
+                item_to_yield['new_state'] = AudioSignal(
+                    audio_data_array=audio_data,
+                    sample_rate=self.sample_rate
+                )
+            
+            yield item_to_yield

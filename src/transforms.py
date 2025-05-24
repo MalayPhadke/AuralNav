@@ -5,12 +5,11 @@ import random
 from collections import OrderedDict
 
 import torch
+import nussl_utils
 import zarr
 import numcodecs
 import numpy as np
 from sklearn.preprocessing import OneHotEncoder
-
-from nussl.core import utils
 
 # This is for when you're running multiple
 # training threads
@@ -551,7 +550,7 @@ class GetExcerpt(object):
                         data[key].shape, pad_amount, is_tensor)
                     data[key] = pad_func(data[key], pad_tuple)
 
-                data[key] = utils._slice_along_dim(
+                data[key] = nussl_utils._slice_along_dim(
                     data[key], self.time_dim, offset, offset + self.excerpt_length)
 
                 # to verify mix lengths are the same

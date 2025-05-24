@@ -1,9 +1,9 @@
-pyroomacoustics==0.4.1
-gym
+pyroomacoustics
+gymnasium
 ffprobe
 jupyter
-git+git://github.com/nussl/nussl
+asteroid
 soxbindings
-numba==0.48.0
+numba
 jupyter
-seaborn^XX^
+seaborn

@@ -1,12 +1,12 @@
 import os
-import gym
+import gymnasium as gym
 import numpy as np
 import torch
 import logging
 import agent
 import utils
 import constants
-import nussl
+import builders
 import audio_processing
 import agent
 from datasets import BufferData, RLDataset
@@ -14,6 +14,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import math
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from modules import STFT
+from nussl_separation_model import SeparationModel
 
 
 class RnnAgent(agent.AgentBase):
@@ -38,25 +42,42 @@ class RnnAgent(agent.AgentBase):
         print('DEVICE:', self.device)
         # Use default config if configs are not provided by user
         if rnn_config is None:
-            self.rnn_config = nussl.ml.networks.builders.build_recurrent_end_to_end(
-                bidirectional=True, dropout=0.3, filter_length=256, hidden_size=300, 
-                hop_length=64, mask_activation=['sigmoid'], mask_complex=False, mix_key='mix_audio', 
-                normalization_class='BatchNorm', num_audio_channels=1, num_filters=256,
-                num_layers=2, num_sources=2, rnn_type='lstm', trainable=False, window_type='sqrt_hann'
+            # self.rnn_config = builders.build_recurrent_end_to_end(
+            self.rnn_config = builders.build_recurrent_end_to_end(
+                num_filters=512,
+                filter_length=1024,
+                hop_length=256,
+                window_type='hann',
+                hidden_size=300,
+                num_layers=2,
+                bidirectional=True,
+                dropout=0.3,
+                num_sources=2,
+                mask_activation=['sigmoid'],
+                num_audio_channels=1
             )
+            # print(f"[RnnAgent] Full self.rnn_config after DEFAULT builder: {self.rnn_config}")
         else:
-            self.rnn_config = nussl.ml.networks.builders.build_recurrent_end_to_end(**rnn_config)
+            # print(f"[RnnAgent] rnn_config PASSED TO BUILDER: {rnn_config}")
+            self.rnn_config = builders.build_recurrent_end_to_end(**rnn_config)
+            # print(f"[RnnAgent] Full self.rnn_config FROM BUILDER (with provided rnn_config): {self.rnn_config}")
 
         if stft_config is None:
-            self.stft_diff = nussl.ml.networks.modules.STFT(
+            self.stft_diff = STFT(
                 hop_length=128, filter_length=512, 
                 direction='transform', num_filters=512
             )
         else:
-            self.stft_diff = nussl.ml.networks.modules.STFT(**stft_config)
+            self.stft_diff = STFT(**stft_config)
 
+        # Extract sample_rate for RLDataset's use, as AgentBase.__init__ doesn't expect it.
+        self.sample_rate = env_config['sample_rate']
+
+        # Prepare config for AgentBase, excluding 'sample_rate' as it's not an explicit param for AgentBase.__init__
+        agent_base_env_config = {k: v for k, v in env_config.items() if k != 'sample_rate'}
+        
         # Initialize the Agent Base class
-        super().__init__(**env_config)
+        super().__init__(**agent_base_env_config)
 
         # Uncomment this to find backprop errors
         # torch.autograd.set_detect_anomaly(True)
@@ -73,7 +94,7 @@ class RnnAgent(agent.AgentBase):
         # Initialize dataset related parameters
         self.bs = dataset_config['batch_size']
         self.num_updates = dataset_config['num_updates']
-        self.dynamic_dataset = RLDataset(buffer=self.dataset, sample_size=self.bs)
+        self.dynamic_dataset = RLDataset(buffer=self.dataset, sample_size=self.bs, sample_rate=self.sample_rate)
         self.dataloader = torch.utils.data.DataLoader(self.dynamic_dataset, batch_size=self.bs)
 
         # Initialize network layers for DQN network
@@ -210,7 +231,8 @@ class RnnAgent(agent.AgentBase):
 class RnnSeparator(nn.Module):
     def __init__(self, rnn_config, verbose=False):
         super(RnnSeparator, self).__init__()
-        self.rnn_model = nussl.ml.SeparationModel(rnn_config, verbose=verbose)
+        # print("[RnnSeparator] rnn_config['modules']['audio']['args'] before SeparationModel:", rnn_config.get('modules', {}).get('audio', {}).get('args')) # Commented out for now
+        self.rnn_model = SeparationModel(rnn_config, verbose=verbose)
 
     def forward(self, x):
         return self.rnn_model(x)

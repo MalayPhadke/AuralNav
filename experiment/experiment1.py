@@ -3,11 +3,12 @@ sys.path.append("../src/")
 from datetime import datetime
 import os
 
-import gym
+import gymnasium as gym
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
 import logging 
+import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 
 import room_types
@@ -15,7 +16,7 @@ import agent
 import audio_room
 import utils
 import constants
-import nussl
+import nussl_utils
 from datasets import BufferData
 import time
 import audio_processing
@@ -29,8 +30,15 @@ warnings.filterwarnings("ignore")
 One of our main experiments for OtoWorld introductory paper 
 """
 
+if "audio-room-v0" not in gym.envs.registry:
+    gym.register(
+        id="audio-room-v0",
+        entry_point="src.audio_room.envs.audio_env:AudioEnv",
+        max_episode_steps=1000  # Or your preferred max steps
+    )
+
+
 # Shoebox Room
-nussl.utils.seed(0)
 room = room_types.ShoeBox(x_length=8, y_length=8)
 
 # Uncomment for Polygon Room
@@ -50,8 +58,10 @@ env = gym.make(
     step_size=.5,
     acceptable_radius=1.0,
     absorption=1.0,
+    play_audio_on_step=False,
+    show_room_on_step=False,
 )
-env.seed(0)
+observation, info = env.reset(seed=0)
 
 # create buffer data folders
 utils.create_buffer_data_folders()
@@ -87,12 +97,11 @@ env_config = {
     'max_steps': 1000,
     'stable_update_freq': 150,
     'save_freq': 1, 
-    'play_audio': False,
-    'show_room': False,
     'writer': writer,
     'dense': True,
     'decay_rate': 0.0002,  # trial and error
-    'decay_per_ep': True
+    'decay_per_ep': True,
+    'sample_rate': constants.RESAMPLE_RATE
 }
 
 save_path = os.path.join(constants.MODEL_SAVE_PATH, exp_name)
@@ -136,8 +145,59 @@ rnn_agent = RnnAgent(
     rnn_config=rnn_config,
     stft_config=stft_config,
     learning_rate=.001,
-    pretrained=True
+    pretrained=False
 )
+# Run the training
 torch.autograd.set_detect_anomaly(True)
-rnn_agent.fit()
+rnn_agent.fit(visualize=True)
+
+# Create directory for plots if it doesn't exist
+plot_dir = '../models/evaluation_data/'
+os.makedirs(plot_dir, exist_ok=True)
+
+# Generate plots after training
+print("\nGenerating performance plots...")
+
+# 1. Create plot of mean reward per episode
+plt.figure(figsize=(10, 6))
+plt.plot(rnn_agent.mean_episode_reward, 'b-')
+plt.title('Mean Reward per Episode')
+plt.xlabel('Episode')
+plt.ylabel('Mean Reward')
+plt.grid(True, alpha=0.3)
+plt.savefig(f'{plot_dir}/mean_reward_{exp_name}.png', dpi=300)
+plt.close()
+print(f"Mean reward plot saved to: {plot_dir}/mean_reward_{exp_name}.png")
+
+# 2. Create plot of cumulative reward
+plt.figure(figsize=(10, 6))
+plt.plot(rnn_agent.cumulative_reward, 'r-')
+plt.title('Cumulative Reward')
+plt.xlabel('Training Step')
+plt.ylabel('Cumulative Reward')
+plt.grid(True, alpha=0.3)
+plt.savefig(f'{plot_dir}/cumulative_reward_{exp_name}.png', dpi=300)
+plt.close()
+print(f"Cumulative reward plot saved to: {plot_dir}/cumulative_reward_{exp_name}.png")
+
+# 3. Create plot showing steps per episode
+finished_steps = []
+for i, episode in enumerate(rnn_agent.episode_summary):
+    if 'finished_at_step' in episode:
+        finished_steps.append(episode['finished_at_step'])
+    elif hasattr(rnn_agent, 'episode_steps') and i < len(rnn_agent.episode_steps):
+        finished_steps.append(rnn_agent.episode_steps[i])
+
+if finished_steps:
+    plt.figure(figsize=(10, 6))
+    plt.plot(finished_steps, 'g-')
+    plt.title('Steps to Complete Episode')
+    plt.xlabel('Episode')
+    plt.ylabel('Steps')
+    plt.grid(True, alpha=0.3)
+    plt.savefig(f'{plot_dir}/steps_per_episode_{exp_name}.png', dpi=300)
+    plt.close()
+    print(f"Steps per episode plot saved to: {plot_dir}/steps_per_episode_{exp_name}.png")
+
+print("\nTraining and visualization complete!")
 

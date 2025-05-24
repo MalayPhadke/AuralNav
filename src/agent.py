@@ -4,13 +4,13 @@ import warnings
 from collections import deque
 
 import numpy as np
-import gym
+import gymnasium as gym
 from scipy.spatial.distance import euclidean
-import nussl
 
 import utils
 import constants
 from datasets import BufferData
+from visualization import EnvironmentVisualizer
 
 # setup logging
 logging.basicConfig(level=logging.INFO)
@@ -89,7 +89,12 @@ class AgentBase:
         if self.validation_freq is not None:
             self.max_validation_reward = -np.inf
 
-    def fit(self):
+    def fit(self, visualize=False):
+        # Initialize visualizer if visualization is enabled
+        # if visualize:
+        #     self.visualizer = EnvironmentVisualizer()
+        #     self.source_detection_tracker = []  # Track source detections for visualization
+        
         for episode in range(1, self.episodes + 1):
             # Reset the self.environment and any other variables at beginning of each episode
             prev_state = None
@@ -97,6 +102,41 @@ class AgentBase:
             episode_rewards = []
             found_sources = []
 
+            # # Setup visualization for this episode
+            # if visualize:
+            #     # Get room boundaries from environment
+            #     if hasattr(self.env.unwrapped, 'corners') and self.env.unwrapped.corners:
+            #         room_bounds = [self.env.unwrapped.room_config[0], self.env.unwrapped.room_config[1]]
+            #     else:
+            #         room_bounds = [self.env.unwrapped.x_min, self.env.unwrapped.y_min, 
+            #                        self.env.unwrapped.x_max, self.env.unwrapped.y_max]
+                
+            #     # Get source locations - convert np.float64 to regular floats if needed
+            #     source_locs = []
+            #     for loc in self.env.unwrapped.source_locs:
+            #         # Convert numpy values to standard float if needed
+            #         if hasattr(loc[0], 'item'):
+            #             source_locs.append([loc[0].item(), loc[1].item()])
+            #         else:
+            #             source_locs.append([float(loc[0]), float(loc[1])])
+            
+            #     # Store source locations for later reference
+            #     self.original_source_locs = source_locs.copy()
+                
+            #     # Reset visualizer with new room configuration
+            #     self.visualizer.reset(
+            #         room_boundaries=room_bounds, 
+            #         source_locs=source_locs,
+            #         acceptable_radius=self.env.unwrapped.acceptable_radius
+            #     )
+                
+            #     # Add initial agent position
+            #     if hasattr(self.env.unwrapped, 'agent_loc'):
+            #         self.visualizer.update(self.env.unwrapped.agent_loc, self.env.unwrapped.cur_angle)
+                    
+            #     # Reset source detection tracker for this episode
+            #     self.source_detection_tracker = []
+                    
             # validation episode?
             validation_episode = False
             if self.validation_freq is not None:
@@ -132,26 +172,99 @@ class AgentBase:
                     action = self.env.action_space.sample()
                     self.action_memory.append(action)
 
-                # Perform the chosen action (NOTE: reward is a dictionary)
-                new_state, agent_info, reward, won = self.env.step(
-                    action, play_audio=self.play_audio, show_room=self.show_room
-                )
+                # Move/rotate agent based on action
+                observation, scalar_reward, terminated, truncated, info_dict = self.env.step(action)
 
-                # dense vs sparse 
-                total_step_reward = 0
-                if self.dense:
-                    total_step_reward += sum(reward.values())
-                else:
-                    total_step_reward += (reward['step_penalty'] + reward['turn_off_reward'])
+                # Map new return values to old variable names for compatibility
+                new_state = observation
+                agent_info = info_dict # info_dict contains the 'rewards' dictionary
+                total_step_reward = scalar_reward # AudioEnv.step already returns sum of rewards
+                won = terminated
+                
+                # Update visualization with new agent position
+                # if visualize and hasattr(self.env.unwrapped, 'agent_loc'):
+                #     self.visualizer.update(self.env.unwrapped.agent_loc, self.env.unwrapped.cur_angle)
+                    
+                #     # Check if a source was found by looking at the reward
+                #     if agent_info.get('rewards', {}).get('turn_off_reward') == constants.TURN_OFF_REWARD:
+                #         # Get exact agent and source locations from agent_info
+                #         agent_loc = agent_info['agent_loc']
                         
+                #         # If source_info is available directly in agent_info (from environment)
+                #         if 'source_info' in agent_info:
+                #             source_info = agent_info['source_info']
+                #             detected_source = source_info['source_loc']
+                #             detected_idx = source_info['source_index']
+                            
+                #             # Create detection record with exact positions
+                #             self.visualizer.record_detection(
+                #                 agent_position=np.array(agent_loc),
+                #                 source_position=np.array(detected_source),
+                #                 step_number=step,
+                #                 source_index=detected_idx
+                #             )
+                            
+                #             # Add to our tracking list
+                #             self.source_detection_tracker.append((agent_loc, step, detected_idx))
+                            
+                #             print(f"Visualization: Recorded detection of source {detected_idx+1} at step {step}")
+                #         else:
+                #             # Fallback to the old method of finding closest source
+                #             detected_source = None
+                #             min_dist = float('inf')
+                #             detected_idx = -1
+                            
+                #             # Check each source that we haven't already detected
+                #             detected_indices = [idx for _, _, idx in self.source_detection_tracker]
+                            
+                #             for idx, src_loc in enumerate(self.original_source_locs):
+                #                 # Skip sources we've already detected
+                #                 if idx in detected_indices:
+                #                     continue
+                                    
+                #                 # Calculate distance to this source
+                #                 dist = np.linalg.norm(np.array(agent_loc) - np.array(src_loc))
+                                
+                #                 # If this is the closest source, record it
+                #                 if dist < min_dist:
+                #                     min_dist = dist
+                #                     detected_idx = idx
+                #                     detected_source = src_loc
+                            
+                #             # Record the detection if we found a source
+                #             if detected_source is not None and detected_idx >= 0:
+                #                 # Create detection record with exact positions
+                #                 self.visualizer.record_detection(
+                #                     agent_position=np.array(agent_loc),
+                #                     source_position=np.array(detected_source),
+                #                     step_number=step,
+                #                     source_index=detected_idx
+                #                 )
+                                
+                #                 # Add to our tracking list
+                #                 self.source_detection_tracker.append((agent_loc, step, detected_idx))
+                                
+                #                 print(f"Visualization: Recorded detection of source {detected_idx+1} at step {step}")
+                        
+                #         # Check if all sources have been found
+                #         if len(self.source_detection_tracker) == len(self.original_source_locs):
+                #             print(f"All sources found at step {step}")
+                
                 # record reward stats
                 self.cumulative_reward += total_step_reward
                 episode_rewards.append(total_step_reward)
 
-                if reward['turn_off_reward'] == constants.TURN_OFF_REWARD:
+                # Access detailed rewards through agent_info (which is info_dict)
+                if agent_info.get('rewards', {}).get('turn_off_reward') == constants.TURN_OFF_REWARD:
+                    # Extract the source that was just found from agent_info
+                    if 'source_info' in agent_info and 'source_file' in agent_info['source_info']:
+                        found_source_file = agent_info['source_info']['source_file']
+                        found_source_loc = agent_info['source_info'].get('source_loc')
+                        print(f"Agent has found source {found_source_file}. \nAgent loc: {agent_info['agent_loc']}, Source loc: {found_source_loc}")
+                    
                     print('In FIT. Received reward: {} at step {}\n'.format(total_step_reward, step))
                     logging.info(f"In FIT. Received reward {total_step_reward} at step: {step}\n")
-
+                        
                 # Perform Update
                 if not validation_episode:
                     self.update()
@@ -159,7 +272,8 @@ class AgentBase:
                 # store SARS in buffer
                 if prev_state is not None and new_state is not None and not won:
                     self.dataset.write_buffer_data(
-                        prev_state, action, total_step_reward, new_state, agent_info, episode, step
+                        prev_state, action, total_step_reward, new_state, 
+                        agent_info, episode, step, sample_rate=self.env.unwrapped.resample_rate
                     )
 
                 # Decay epsilon based on total steps (across all episodes, not within an episode)
@@ -174,30 +288,41 @@ class AgentBase:
                 if step % self.stable_update_freq == 0:
                     self.update_stable_networks()
 
-                # Terminate the episode if episode is won or at max steps
-                if won or (step == self.max_steps - 1):
+                # Terminate the episode if episode is won, truncated, or at max steps
+                if won or truncated or (step == self.max_steps - 1):
                     # terminal state is silence
-                    silence_array = np.zeros_like(prev_state.audio_data)
-                    terminal_silent_state = prev_state.make_copy_with_audio_data(audio_data=silence_array)
+                    # prev_state is a dict like {'audio': np_array, 'state': np_array}
+                    if prev_state and 'audio' in prev_state and 'state' in prev_state:
+                        silence_array = np.zeros_like(prev_state['audio'])
+                        terminal_silent_state = {'audio': silence_array, 'state': prev_state['state']}
+                    else:
+                        # Fallback or error handling if prev_state is not as expected
+                        # This might happen on the very first step if not handled carefully
+                        # For now, creating a dummy structure if prev_state is problematic
+                        # A more robust solution might be needed depending on execution flow
+                        silence_array = np.array([]) # Or some default shape
+                        terminal_silent_state = {'audio': silence_array, 'state': np.array([])}
+
                     self.dataset.write_buffer_data(
-                        prev_state, action, total_step_reward, terminal_silent_state, agent_info, episode, step
+                        prev_state, action, total_step_reward, terminal_silent_state, 
+                        agent_info, episode, step, sample_rate=self.env.unwrapped.resample_rate
                     )
 
                     # record mean reward for this episode
-                    self.mean_episode_reward = np.mean(episode_rewards)
+                    self.mean_episode_reward.append(np.mean(episode_rewards))
 
                     if validation_episode:
                         # new best validation reward
-                        if self.mean_episode_reward > self.max_validation_reward:
-                            self.max_validation_reward = self.mean_episode_reward
+                        if np.mean(episode_rewards) > self.max_validation_reward:
+                            self.max_validation_reward = np.mean(episode_rewards)
 
                             # save best validation model
                             self.save_model('best_valid_reward.pt')
 
                         if self.writer is not None:
-                            self.writer.add_scalar('Reward/validation_mean_per_episode', self.mean_episode_reward, episode)
+                            self.writer.add_scalar('Reward/validation_mean_per_episode', np.mean(episode_rewards), episode)
                     elif self.writer is not None:
-                        self.writer.add_scalar('Reward/mean_per_episode', self.mean_episode_reward, episode)
+                        self.writer.add_scalar('Reward/mean_per_episode', np.mean(episode_rewards), episode)
                         self.writer.add_scalar('Reward/cumulative', self.cumulative_reward, self.total_experiment_steps)
 
                     end = time.time()
@@ -218,6 +343,24 @@ class AgentBase:
                     print(logging_str)
                     logging.info(logging_str)
 
+                    # End episode in visualizer and generate visualization
+                    # if visualize:
+                    #     # Add information about why the episode ended
+                    #     end_reason = "All sources found" if won else "Max steps reached" if step == self.max_steps - 1 else "Truncated"
+                        
+                    #     # Create a record of episode summary in the visualization
+                    #     episode_summary = {
+                    #         "episode": episode,
+                    #         "won": won,
+                    #         "step": step+1,
+                    #         "sources_found": len(self.source_detection_tracker),
+                    #         "total_sources": len(self.original_source_locs),
+                    #         "end_reason": end_reason
+                    #     }
+                        
+                    #     # End the episode with summary data
+                    #     self.visualizer.end_episode(episode_summary=episode_summary)
+                        
                     # break and go to new episode
                     break
 

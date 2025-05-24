@@ -1,12 +1,12 @@
-import gym
+import gymnasium as gym #using gymnasium instead of gym
 from pyroomacoustics import MicrophoneArray, ShoeBox, Room, linear_2D_array, Constants
 import numpy as np
 import matplotlib.pyplot as plt
-from gym import spaces
+from gymnasium import spaces
 from scipy.spatial.distance import euclidean
 from sklearn.metrics.pairwise import euclidean_distances
 from copy import deepcopy
-import nussl
+from audio_signal import AudioSignal ## original AudioSignal class from nussl
 import sys
 sys.path.append("../../")
 
@@ -34,10 +34,12 @@ class AudioEnv(gym.Env):
         num_sources=2,
         degrees=np.deg2rad(30),
         reset_sources=True,
-        same_config=False
+        same_config=False,
+        play_audio_on_step=False,
+        show_room_on_step=False
     ):
         """
-        This class inherits from OpenAI Gym Env and is used to simulate the agent moving in PyRoom.
+        This class inherits from OpenAI Gymnasium Env and is used to simulate the agent moving in PyRoom.
 
         Args:
             room_config (List or np.array): dimensions of the room. For Shoebox, in the form of [10,10]. Otherwise,
@@ -61,6 +63,8 @@ class AudioEnv(gym.Env):
                     }
             same_config (bool): If set to true, difficulty of env becomes easier - agent initial loc, source placement,
                                 and audio files don't change over episodes
+            play_audio_on_step (bool): If true, audio will play after every step
+            show_room_on_step (bool): If true, room will be displayed after every step
         """
         self.resample_rate = resample_rate
         self.absorption = absorption
@@ -85,9 +89,18 @@ class AudioEnv(gym.Env):
         self.min_size_audio = np.inf
         self.degrees = degrees
         self.cur_angle = 0
+        
+        # Define observation space
+        # Using large dimensions for audio that will be updated after loading audio
+        self.observation_space = spaces.Dict({
+            'audio': spaces.Box(low=-np.inf, high=np.inf, shape=(100000, self.num_channels), dtype=np.float32),
+            'state': spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32)
+        })
         self.reset_sources = reset_sources
         self.source_folders_dict = source_folders_dict
         self.same_config = same_config
+        self.play_audio_on_step = play_audio_on_step
+        self.show_room_on_step = show_room_on_step
 
         # choose audio files as sources
         self.direct_sources = choose_random_files(self.source_folders_dict)
@@ -136,6 +149,52 @@ class AudioEnv(gym.Env):
             self.x_max = self.room_config[0]
             self.y_max = self.room_config[1]
             self.x_min, self.y_min = 0, 0
+        
+    def _validate_room_config(self):
+        """
+        Validates the current room configuration to ensure it will work with PyRoomAcoustics.
+        Checks for:
+        1. Valid source locations (within room boundaries)
+        2. Valid agent location (within room boundaries)
+        3. Non-zero audio data for sources
+        4. Sufficient distance between sources and agent
+        
+        Returns:
+            bool: True if the configuration is valid, False otherwise
+        """
+        # Check if source locations are within room boundaries
+        if hasattr(self, 'source_locs') and self.source_locs:
+            for i, loc in enumerate(self.source_locs):
+                if not (self.x_min <= loc[0] <= self.x_max and self.y_min <= loc[1] <= self.y_max):
+                    print(f"Source {i} at {loc} is outside room boundaries: [{self.x_min}, {self.x_max}] x [{self.y_min}, {self.y_max}]")
+                    return False
+        else:
+            # No sources defined yet
+            return True
+            
+        # Check if agent location is within room boundaries
+        if hasattr(self, 'agent_loc') and self.agent_loc is not None:
+            if not (self.x_min <= self.agent_loc[0] <= self.x_max and self.y_min <= self.agent_loc[1] <= self.y_max):
+                print(f"Agent at {self.agent_loc} is outside room boundaries: [{self.x_min}, {self.x_max}] x [{self.y_min}, {self.y_max}]")
+                return False
+                
+        # Check if audio data is non-zero
+        if hasattr(self, 'audio') and self.audio:
+            for i, audio in enumerate(self.audio):
+                if len(audio) == 0:
+                    print(f"Source {i} has zero-length audio data")
+                    return False
+                    
+        # Check minimum distance between sources and agent (to avoid numerical issues)
+        if hasattr(self, 'agent_loc') and self.agent_loc is not None and hasattr(self, 'source_locs') and self.source_locs:
+            min_distance = 0.1  # Minimum distance in meters
+            for i, loc in enumerate(self.source_locs):
+                distance = np.linalg.norm(np.array(loc) - np.array(self.agent_loc))
+                if distance < min_distance:
+                    print(f"Source {i} at {loc} is too close to agent at {self.agent_loc} (distance: {distance}m)")
+                    return False
+                    
+        return True
 
     def _move_agent(self, new_agent_loc, initial_placing=False):
         """
@@ -206,7 +265,7 @@ class AudioEnv(gym.Env):
                     x = x + direction * np.cos(angle) * distance
                     y = y + direction + np.sin(angle) * distance
                     point = [x, y]
-                    if self.room.is_inside(point, include_borders=False):
+                    if self.room.is_inside(point):
                         accepted = True
                         if len(sampled_points) > 0:
                             dist_to_existing = euclidean_distances(
@@ -260,7 +319,7 @@ class AudioEnv(gym.Env):
         self.min_size_audio = np.inf
         for idx, audio_file in enumerate(self.direct_sources):
             # Audio will be automatically re-sampled to the given rate (default sr=8000).
-            a = nussl.AudioSignal(audio_file, sample_rate=self.resample_rate)
+            a = AudioSignal(audio_file, sample_rate=self.resample_rate)
             a.to_mono()
 
             # normalize audio so both sources have similar volume at beginning before mixing
@@ -277,6 +336,12 @@ class AudioEnv(gym.Env):
                 self.min_size_audio = len(a)
             self.audio.append(a.audio_data.squeeze())
 
+        # Update observation space with correct audio dimensions
+        self.observation_space = spaces.Dict({
+            'audio': spaces.Box(low=-np.inf, high=np.inf, shape=(self.min_size_audio, self.num_channels), dtype=np.float32),
+            'state': spaces.Box(low=-np.inf, high=np.inf, shape=(3,), dtype=np.float32)
+        })
+        
         # add sources using audio data
         for idx, audio in enumerate(self.audio):
             self.room.add_source(
@@ -296,7 +361,7 @@ class AudioEnv(gym.Env):
             # actually remove source from the room
             room_src = self.room.sources.pop(index)
 
-    def step(self, action, play_audio=False, show_room=False):
+    def step(self, action):
         """
         This function simulates the agent taking one step in the environment (and room) given an action:
             0 = Move forward
@@ -307,130 +372,207 @@ class AudioEnv(gym.Env):
         It calls _move_agent, checks to see if the agent has reached a source, and if not, computes the RIR.
 
         Args:
-            action (int): direction agent is to move - 0 (L), 1 (R), 2 (U), 3 (D)
-            play_audio (bool): whether to play the the mic audio (stored in "data")
-            show_room (bool): Controls whether room is visually plotted at each step
+            action (int): direction agent is to move - 0 (Forward), 1 (Backward), 2 (Rotate Right), 3 (Rotate Left)
 
         Returns:
-            Tuple of the format List (empty if done, else [data]), reward, done
+            tuple: Contains:
+                - observation (dict): Dictionary containing 'audio' and 'state' observations
+                - reward (float): Total reward for this step
+                - terminated (bool): Whether the episode has ended due to task completion
+                - truncated (bool): Whether the episode was truncated (e.g., time limit)
+                - info (dict): Additional information including detailed rewards and positions
         """
-        # return reward dictionary for each step
+        # Initialize reward components
         reward = {
             'step_penalty': constants.STEP_PENALTY,
             'turn_off_reward': 0,
             'closest_reward': 0,
             'orient_penalty': 0
         }
+        terminated = False
+        truncated = False
+        info = {
+            'agent_loc': self.agent_loc.copy(),
+            'source_locs': [loc.copy() for loc in self.source_locs],
+            'cur_angle': self.cur_angle,
+            'rewards': reward.copy()
+        }
 
-        #print('Action:', self.action_to_string[action])
-
-        # movement
+        # Movement logic
         x, y = self.agent_loc[0], self.agent_loc[1]
-        done = False
 
-        if action in [0, 1]:
-            if action == 0:
-                sign = 1
-            if action == 1:
-                sign = -1
+        if action in [0, 1]:  # Forward or Backward
+            sign = 1 if action == 0 else -1
             x = x + sign * np.cos(self.cur_angle) * self.step_size
             y = y + sign * np.sin(self.cur_angle) * self.step_size
-        elif action == 2:
+        elif action == 2:  # Rotate Right
             self.cur_angle = round((self.cur_angle + self.degrees) % (2 * np.pi), 4)
             reward['orient_penalty'] = constants.ORIENT_PENALTY
-        elif action == 3:
+        elif action == 3:  # Rotate Left
             self.cur_angle = round((self.cur_angle - self.degrees) % (2 * np.pi), 4)
             reward['orient_penalty'] = constants.ORIENT_PENALTY
-        # Check if the new points lie within the room
+
+        # Check if new position is within room boundaries
         try:
-            if self.room.is_inside([x, y], include_borders=False):
+            if self.room.is_inside([x, y]):
                 points = np.array([x, y])
             else:
                 points = self.agent_loc
         except:
-            # in case the is_inside func fails
             points = self.agent_loc
 
-        # Move agent in the direction of action
+        # Update agent position
         self._move_agent(new_agent_loc=points)
+        info['agent_loc'] = self.agent_loc.copy()
 
-        # Check if goal state is reached
+        # Check if any source is reached
         for index, source in enumerate(self.source_locs):
-            # Agent has found the source
             if euclidean(self.agent_loc, source) <= self.acceptable_radius:
-                print(f'Agent has found source {self.direct_sources[index]}. \nAgent loc: {self.agent_loc}, Source loc: {source}')
+                found_source = self.direct_sources[index]
+                print(f'Agent has found source {found_source}. \nAgent loc: {self.agent_loc}, Source loc: {source}')
                 reward['turn_off_reward'] = constants.TURN_OFF_REWARD
-                # If there is more than one source, then we want to remove this source
+                
+                # Add source info to the info dictionary for visualization
+                info['source_info'] = {
+                    'source_file': found_source,
+                    'source_loc': source,
+                    'source_index': index
+                }
+                
                 if len(self.source_locs) > 1:
-                    # remove the source (will take effect in the next step)
+                    # Remove the source for next step
                     self._remove_source(index=index)
-
-                    # Calculate the impulse response
                     self.room.compute_rir()
                     self.room.simulate()
                     data = self.room.mic_array.signals
-
-                    # Convert the data back to Nussl Audio object
-                    data = nussl.AudioSignal(
-                        audio_data_array=data, sample_rate=self.resample_rate)
-
-                    if play_audio or show_room:
-                        self.render(data, play_audio, show_room)
-
-                    done = False
-                    return data, [self.agent_loc, self.cur_angle], reward, done
-
-                # This was the last source hence we can assume we are done
+                    audio_obs = AudioSignal(audio_data_array=data, sample_rate=self.resample_rate)
+                    
+                    if self.play_audio_on_step or self.show_room_on_step:
+                        self.render(audio_obs, self.play_audio_on_step, self.show_room_on_step)
+                    
+                    # Create observation
+                    state_obs = np.array([*self.agent_loc, self.cur_angle], dtype=np.float32)
+                    observation = {
+                        'audio': audio_obs.audio_data.squeeze(),
+                        'state': state_obs
+                    }
+                    info['rewards'] = reward
+                    return observation, sum(reward.values()), terminated, truncated, info
                 else:
-                    done = True
+                    # Last source found
+                    terminated = True
                     self.reset()
-                    return None, [self.agent_loc, self.cur_angle], reward, done
+                    # Return empty observation for terminated state
+                    return {}, sum(reward.values()), terminated, truncated, info
 
-        if not done:
-            # Calculate the impulse response
+        # If no source found this step
+        self.room.compute_rir()
+        self.room.simulate()
+        data = self.room.mic_array.signals
+        
+        # Create audio observation
+        audio_obs = AudioSignal(audio_data_array=data, sample_rate=self.resample_rate)
+        
+        if self.play_audio_on_step or self.show_room_on_step:
+            self.render(audio_obs, self.play_audio_on_step, self.show_room_on_step)
+        
+        # Calculate distance-based reward
+        min_dist = euclidean_distances(
+            np.array(self.agent_loc).reshape(1, -1), self.source_locs).min()
+        reward['closest_reward'] = (1 / (min_dist + 1e-4))
+        
+        # Create observation
+        state_obs = np.array([*self.agent_loc, self.cur_angle], dtype=np.float32)
+        observation = {
+            'audio': audio_obs.audio_data.squeeze(),
+            'state': state_obs
+        }
+        
+        info['rewards'] = reward
+        return observation, sum(reward.values()), terminated, truncated, info
+
+    def reset(self, seed=None, options=None):
+        """
+        Reset the environment to an initial state and return the initial observation.
+
+        Args:
+            seed (int, optional): Seed for the random number generator. Defaults to None.
+            options (dict, optional): Additional options for environment reset. Can include:
+                - removing_source (int): Index of source to remove
+                - same_config (bool): Whether to use the same configuration as previous episodes
+
+        Returns:
+            tuple: Contains:
+                - observation (dict): Initial observation containing 'audio' and 'state'
+                - info (dict): Additional information about the environment state
+        """
+        # Set the seed if provided
+        if seed is not None:
+            np.random.seed(seed)
+        
+        # Handle options
+        removing_source = options.get('removing_source') if options else None
+        same_config = options.get('same_config', self.same_config) if options else self.same_config
+        
+        # Re-create room
+        self._create_room()
+
+        if not same_config:
+            # Randomly add sources to the room
+            self._add_sources()
+            # Randomly place agent in room at beginning of next episode
+            self._move_agent(new_agent_loc=None, initial_placing=True)
+        else:
+            # Place sources and agent at same locations to start every episode
+            self._add_sources(new_source_locs=self.fixed_source_locs)
+            self._move_agent(new_agent_loc=self.fixed_agent_locs, initial_placing=True)
+        
+        # Validate room configuration before computing RIR
+        valid_config = self._validate_room_config()
+        if not valid_config:
+            # If invalid, recreate the room and try again
+            print("Invalid room configuration detected, recreating room...")
+            self._create_room()
+            self._add_sources()
+            self._move_agent(new_agent_loc=None, initial_placing=True)
+    
+        # Get initial observation with error handling
+        try:
             self.room.compute_rir()
             self.room.simulate()
             data = self.room.mic_array.signals
-
-            # Convert data to nussl audio signal
-            data = nussl.AudioSignal(
-                audio_data_array=data, sample_rate=self.resample_rate)
-
-            if play_audio or show_room:
-                self.render(data, play_audio, show_room)
-
-            # be careful not to give too much reward here (i.e. 1/min_dist could be very large if min_dist is quite small)
-            # related to acceptable radius size because this reward is only given when NOT turning off a source
-            min_dist = euclidean_distances(
-                np.array(self.agent_loc).reshape(1, -1), self.source_locs).min()
-            reward['closest_reward'] = (1 / (min_dist + 1e-4))
-            #print('agent_loc:', self.agent_loc, 'source_locs:', self.source_locs) 
-            #print('cur angle:', self.cur_angle)
-            #print('reward:', reward)
-
-            # Return the room rir and convolved signals as the new state
-            return data, [self.agent_loc, self.cur_angle], reward, done
-
-    def reset(self, removing_source=None):
-        """
-        This function re-creates the room, then places sources and agent randomly (but separated) in the room.
-        To be used after each episode.
-
-        Args:
-            removing_source (int): Integer that tells us the index of sources that we will be removing
-        """
-        # re-create room
-        self._create_room()
-
-        if not self.same_config:
-            # randomly add sources to the room
+        except ValueError as e:
+            print(f"Error in PyRoomAcoustics: {e}\nRecreating room with different configuration...")
+            # Try again with different configuration
+            self._create_room()
             self._add_sources()
-            # randomly place agent in room at beginning of next episode
             self._move_agent(new_agent_loc=None, initial_placing=True)
-        else:
-            # place sources and agent at same locations to start every episode
-            self._add_sources(new_source_locs=self.fixed_source_locs)
-            self._move_agent(new_agent_loc=self.fixed_agent_locs, initial_placing=True)
+            # Attempt computation again
+            self.room.compute_rir()
+            self.room.simulate()
+            data = self.room.mic_array.signals
+        
+        # Create audio observation
+        audio_obs = AudioSignal(audio_data_array=data, sample_rate=self.resample_rate)
+        
+        # Create state observation
+        state_obs = np.array([*self.agent_loc, self.cur_angle], dtype=np.float32)
+        
+        # Create observation dictionary
+        observation = {
+            'audio': audio_obs.audio_data.squeeze(),
+            'state': state_obs
+        }
+        
+        # Create info dictionary
+        info = {
+            'agent_loc': self.agent_loc.copy(),
+            'source_locs': [loc.copy() for loc in self.source_locs],
+            'cur_angle': self.cur_angle,
+            'sample_rate': self.resample_rate
+        }
+        
+        return observation, info
 
     def render(self, data, play_audio, show_room):
         """
