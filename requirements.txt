@@ -7,3 +7,4 @@ soxbindings
 numba
 jupyter
 seaborn
+mesa>=1.0

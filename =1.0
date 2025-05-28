@@ -1,0 +1,26 @@
+Defaulting to user installation because normal site-packages is not writeable
+Collecting mesa
+  Using cached mesa-3.0.3-py3-none-any.whl.metadata (9.8 kB)
+Collecting numpy (from mesa)
+  Using cached numpy-2.2.6-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (62 kB)
+Collecting pandas (from mesa)
+  Using cached pandas-2.2.3-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (89 kB)
+Collecting tqdm (from mesa)
+  Using cached tqdm-4.67.1-py3-none-any.whl.metadata (57 kB)
+Collecting python-dateutil>=2.8.2 (from pandas->mesa)
+  Using cached python_dateutil-2.9.0.post0-py2.py3-none-any.whl.metadata (8.4 kB)
+Collecting pytz>=2020.1 (from pandas->mesa)
+  Using cached pytz-2025.2-py2.py3-none-any.whl.metadata (22 kB)
+Collecting tzdata>=2022.7 (from pandas->mesa)
+  Using cached tzdata-2025.2-py2.py3-none-any.whl.metadata (1.4 kB)
+Requirement already satisfied: six>=1.5 in /usr/lib/python3/dist-packages (from python-dateutil>=2.8.2->pandas->mesa) (1.16.0)
+Using cached mesa-3.0.3-py3-none-any.whl (226 kB)
+Using cached numpy-2.2.6-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (16.8 MB)
+Using cached pandas-2.2.3-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (13.1 MB)
+Using cached python_dateutil-2.9.0.post0-py2.py3-none-any.whl (229 kB)
+Using cached pytz-2025.2-py2.py3-none-any.whl (509 kB)
+Using cached tzdata-2025.2-py2.py3-none-any.whl (347 kB)
+Using cached tqdm-4.67.1-py3-none-any.whl (78 kB)
+Installing collected packages: pytz, tzdata, tqdm, python-dateutil, numpy, pandas, mesa
+
+Successfully installed mesa-3.0.3 numpy-2.2.6 pandas-2.2.3 python-dateutil-2.9.0.post0 pytz-2025.2 tqdm-4.67.1 tzdata-2025.2

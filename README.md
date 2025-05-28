@@ -190,3 +190,36 @@ AuralNav is an ongoing research project with several planned enhancements and di
 #### Curriculum Learning and Task Decomposition
 - **Development**: Implement curriculum learning strategies where the agent gradually learns more complex tasks
 - **Impact**: Improves learning efficiency and enables agents to solve more challenging tasks
+
+## Mesa Visualization
+
+This project includes an interactive web-based visualization using Mesa.
+To run the visualization:
+
+1.  Ensure all dependencies are installed:
+    ```bash
+    pip install -r requirements.txt
+    ```
+    (Note: If you encounter issues with specific packages like `pyroomacoustics` or `soxbindings` during this step, ensure you have their system-level dependencies installed. For `pyroomacoustics`, this might include Python development headers (`python3-dev` on Debian/Ubuntu) and for `soxbindings` it would be `libsox-dev`. The core `mesa` dependency should install without these if they are problematic for your system.)
+
+2.  Navigate to the `src` directory (if you are in the repository root):
+    ```bash
+    cd src
+    ```
+    (Or adjust the run command if you prefer to run from the root)
+3.  Run the Mesa server:
+    ```bash
+    python -m mesa_visualization.server
+    ```
+    Alternatively, if you are in the `src/mesa_visualization` directory:
+    ```bash
+    python server.py
+    ```
+    Or from the project root:
+    ```bash
+    python src/mesa_visualization/server.py
+    ```
+
+4.  Open your web browser and go to `http://127.0.0.1:8521` (or the port specified in the server script if changed).
+
+You should see the simulation running and be able to observe the agent's behavior in the environment.
