@@ -1683,7 +1683,7 @@ class AudioSignal(object):
         and then played with ffplay.
         """
         # lazy load
-        from . import play_utils
+        import play_utils
         play_utils.play(self)
 
     def embed_audio(self, ext='.mp3', display=True):
@@ -1709,7 +1709,7 @@ class AudioSignal(object):
         the notebook.        
         """
         # lazy load
-        from . import play_utils
+        import play_utils
         return play_utils.embed_audio(self, ext=ext, display=display)
 
     ##################################

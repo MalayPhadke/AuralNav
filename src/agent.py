@@ -10,7 +10,6 @@ from scipy.spatial.distance import euclidean
 import utils
 import constants
 from datasets import BufferData
-from visualization import EnvironmentVisualizer
 
 # setup logging
 logging.basicConfig(level=logging.INFO)
@@ -35,12 +34,11 @@ class AgentBase:
         decay_rate=0.0005,
         stable_update_freq=-1,
         save_freq=1,
-        play_audio=False,
-        show_room=False,
         writer=None,
         dense=True,
         decay_per_ep=False,
-        validation_freq=None
+        validation_freq=None,
+        num_sources=2
     ):
         """
         This class is a base agent class which will be inherited when creating various agents.
@@ -73,12 +71,11 @@ class AgentBase:
         self.decay_rate = decay_rate
         self.stable_update_freq = stable_update_freq
         self.save_freq = save_freq
-        self.play_audio = play_audio
-        self.show_room = show_room
         self.writer = writer
         self.dense = dense
         self.decay_per_ep = decay_per_ep
         self.validation_freq = validation_freq
+        self.num_sources = num_sources
         self.losses = []
         self.cumulative_reward = 0
         self.total_experiment_steps = 0
@@ -160,7 +157,9 @@ class AgentBase:
 
                 if model_action:
                     # For the first two steps (We don't have prev_state, new_state pair), then perform a random action
+                    # print(step)
                     if step < 2:
+                        logging.info("Performing random action")
                         action = self.env.action_space.sample()
                     else:
                         # This is where agent will actually do something
@@ -253,6 +252,7 @@ class AgentBase:
                 # record reward stats
                 self.cumulative_reward += total_step_reward
                 episode_rewards.append(total_step_reward)
+                source_locs = self.env.unwrapped.source_locs
 
                 # Access detailed rewards through agent_info (which is info_dict)
                 if agent_info.get('rewards', {}).get('turn_off_reward') == constants.TURN_OFF_REWARD:
@@ -260,10 +260,13 @@ class AgentBase:
                     if 'source_info' in agent_info and 'source_file' in agent_info['source_info']:
                         found_source_file = agent_info['source_info']['source_file']
                         found_source_loc = agent_info['source_info'].get('source_loc')
-                        print(f"Agent has found source {found_source_file}. \nAgent loc: {agent_info['agent_loc']}, Source loc: {found_source_loc}")
-                    
-                    print('In FIT. Received reward: {} at step {}\n'.format(total_step_reward, step))
-                    logging.info(f"In FIT. Received reward {total_step_reward} at step: {step}\n")
+                        found_sources.append((found_source_file, found_source_loc))
+                        logging.info(f"Agent has found source {found_source_file}. \nAgent loc: {agent_info['agent_loc']}, Source loc: {found_source_loc}")
+                        logging.info(f"Agent has found {len(found_sources)} sources so far out of {self.num_sources}")
+                    # if agent_info.get('rewards', {}).get('completion_reward') == constants.COMPLETED_PROGRESS_REWARD:
+                        # print('In FIT. Received completion reward: {} at step {}\n'.format(total_step_reward, step))
+                    # print('In FIT. Received reward: {} at step {}\n'.format(total_step_reward, step))
+                    logging.info(f"In FIT. Received reward {total_step_reward} (turn_off_reward: {agent_info.get('rewards', {}).get('turn_off_reward')}) and completion reward: {agent_info.get('rewards', {}).get('completion_reward')}) at step: {step}\n")
                         
                 # Perform Update
                 if not validation_episode:
@@ -324,7 +327,6 @@ class AgentBase:
                     elif self.writer is not None:
                         self.writer.add_scalar('Reward/mean_per_episode', np.mean(episode_rewards), episode)
                         self.writer.add_scalar('Reward/cumulative', self.cumulative_reward, self.total_experiment_steps)
-
                     end = time.time()
                     total_time = end - start
 
@@ -338,29 +340,28 @@ class AgentBase:
                         f"- Finished at step: {step+1}\n"
                         f"- Time taken:   {total_time:04f} \n"
                         f"- Steps/Second: {float(step+1)/total_time:04f} \n"
-                        f"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ \n"
                     )
+                    logging_str += f"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ \n"
                     print(logging_str)
                     logging.info(logging_str)
 
-                    # End episode in visualizer and generate visualization
-                    # if visualize:
-                    #     # Add information about why the episode ended
-                    #     end_reason = "All sources found" if won else "Max steps reached" if step == self.max_steps - 1 else "Truncated"
-                        
-                    #     # Create a record of episode summary in the visualization
-                    #     episode_summary = {
-                    #         "episode": episode,
-                    #         "won": won,
-                    #         "step": step+1,
-                    #         "sources_found": len(self.source_detection_tracker),
-                    #         "total_sources": len(self.original_source_locs),
-                    #         "end_reason": end_reason
-                    #     }
-                        
-                    #     # End the episode with summary data
-                    #     self.visualizer.end_episode(episode_summary=episode_summary)
-                        
+                    # log our episode summary information
+                    episode_data = {
+                        'num_steps': step,
+                        'total_reward': sum(episode_rewards),
+                        'time': time.time(),
+                        'losses': self.losses,
+                    }
+                    
+                    # Add sources found if the environment keeps track of them
+                    if hasattr(self.env.unwrapped, 'detected_sources'):
+                        episode_data['sources_found'] = len(self.env.unwrapped.detected_sources)
+                    
+                    if hasattr(self, 'episode_summary'):
+                        self.episode_summary.append(episode_data)
+                    else:
+                        self.episode_summary = [episode_data]
+
                     # break and go to new episode
                     break
 

@@ -1,22 +1,22 @@
 import os
 
 # source data
-DIR_MALE = "../sounds/dry_recordings/dev/051/"
-DIR_FEMALE = "../sounds/dry_recordings/dev/050/"
-DIR_CAR = '../sounds/car/'
-DIR_PHONE = '../sounds/siren/'
+DIR_MALE = "./sounds/dry_recordings/dev/051/"
+DIR_FEMALE = "./sounds/dry_recordings/dev/050/"
+DIR_CAR = './sounds/car/'
+DIR_PHONE = './sounds/siren/'
 AUDIO_EXTENSION = ".wav"
 
 # saved data during experiment
-DATA_PATH = "../data"
+DATA_PATH = "./data"
 DIR_PREV_STATES = os.path.join(DATA_PATH, 'prev_states/')
 DIR_NEW_STATES = os.path.join(DATA_PATH, 'new_states/')
 DIR_DATASET_ITEMS = os.path.join(DATA_PATH, 'dataset_items/')
-MODEL_SAVE_PATH = '../models/'
+MODEL_SAVE_PATH = './models/'
 DIST_URL = "init_dist_to_target.p"
 STEPS_URL = "steps_to_completion.p"
 REWARD_URL = "rewards_per_episode.p"
-PRETRAIN_PATH = '../models/pretrained.pth'
+PRETRAIN_PATH = './models/pretrained.pth'
 
 # audio stuff
 RESAMPLE_RATE = 8000
@@ -31,7 +31,8 @@ MIN_EPSILON = 0.1
 # reward structure (keep as floats)
 STEP_PENALTY = -0.5
 TURN_OFF_REWARD = 100.0
-ORIENT_PENALTY = -0.1 
+ORIENT_PENALTY = -0.1
+COMPLETED_PROGRESS_REWARD = 100.0  # Bonus for making progress with multiple sources
 
 # dataset
 MAX_BUFFER_ITEMS = 10000

@@ -52,26 +52,20 @@ class SeparationModel(nn.Module):
         config: (str, dict) Either a config dictionary that defines the model and its
           connections, or the path to a json file containing the dictionary. If the
           latter, the path will be loaded and used.
+        num_sources: (int, optional) If provided, overrides the num_sources parameter in the config
 
     Attributes:
         config: (dict) The loaded config dictionary passed in upon init.
         connections: (list) A list of strings that define the connections as given
             in `config`.
         output: (list)
+        num_sources: (int) Number of audio sources to separate
 
     See also:
         ml.register_module to register your custom modules with SeparationModel.
 
-    Examples:
-        >>> import nussl
-        >>> config = nussl.ml.networks.builders.build_recurrent_dpcl(
-        >>>     num_features=512, hidden_size=300, num_layers=3, bidirectional=True,
-        >>>     dropout=0.3, embedding_size=20, 
-        >>>     embedding_activation=['sigmoid', 'unit_norm'])
-        >>>
-        >>> model = SeparationModel(config)
     """
-    def __init__(self, config, verbose=False):
+    def __init__(self, config, verbose=False, num_sources=None):
         super(SeparationModel, self).__init__()
         if type(config) is str:
             if os.path.exists(config):
@@ -80,7 +74,21 @@ class SeparationModel(nn.Module):
             else:
                 config = json.loads(config)
 
+        # Override num_sources if specified
+        if num_sources is not None:
+            # Store the original config for reference
+            self.original_config = copy.deepcopy(config)
+            
+            # Update num_sources in the config
+            for module_key in config['modules']:
+                module = config['modules'][module_key]
+                if 'args' in module and 'num_sources' in module['args']:
+                    module['args']['num_sources'] = num_sources
+                    if verbose:
+                        print(f"Updated {module_key} num_sources to {num_sources}")
+        
         self._validate_config(config)
+        self.num_sources = num_sources or config.get('num_sources', 2)  # Default to 2 if not specified
 
         module_dict = {}
         self.input = {}

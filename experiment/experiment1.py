@@ -44,9 +44,19 @@ room = room_types.ShoeBox(x_length=8, y_length=8)
 # Uncomment for Polygon Room
 #room = room_types.Polygon(n=6, r=2, x_center=5, y_center=5)
 
+# Configure audio sources
+# For multi-source experiment, add more source types or increase count
+# Format: {folder_path: number_of_files_to_use}
+source_folders_dict = {
+    '../sounds/phone/': 1,
+    '../sounds/siren/': 1,
+    # Add more sources as needed:
+    # './sounds/car/': 1,
+}
 
-source_folders_dict = {'../sounds/phone/': 1,
-                        '../sounds/siren/': 1}
+# Configure number of sources for the experiment
+NUM_SOURCES = 2  # Change this to 3, 4, etc. for multi-source experiments
+MAX_DETECTABLE = None  # Set to a number less than NUM_SOURCES to allow partial success
 
 # Set up the gym environment
 env = gym.make(
@@ -58,8 +68,10 @@ env = gym.make(
     step_size=.5,
     acceptable_radius=1.0,
     absorption=1.0,
-    play_audio_on_step=False,
-    show_room_on_step=False,
+    visualize_pygame=True,
+    play_audio_on_step=True,
+    num_sources=NUM_SOURCES,
+    max_detectable_sources=MAX_DETECTABLE
 )
 observation, info = env.reset(seed=0)
 
@@ -84,7 +96,7 @@ dataset = BufferData(
 )
 
 # define tensorboard writer, name the experiment!
-exp_name = 'pretrain-150eps'
+exp_name = f'multi-source-{NUM_SOURCES}-150eps'
 exp_id = '{}_{}'.format(exp_name, datetime.now().strftime('%d_%m_%Y-%H_%M_%S'))
 writer = SummaryWriter('runs/{}'.format(exp_id))
 
@@ -101,7 +113,8 @@ env_config = {
     'dense': True,
     'decay_rate': 0.0002,  # trial and error
     'decay_per_ep': True,
-    'sample_rate': constants.RESAMPLE_RATE
+    'sample_rate': constants.RESAMPLE_RATE,
+    'num_sources': NUM_SOURCES  # Pass the number of sources to the agent
 }
 
 save_path = os.path.join(constants.MODEL_SAVE_PATH, exp_name)
@@ -127,7 +140,7 @@ rnn_config = {
     'num_audio_channels': 1,
     'num_filters': 256,
     'num_layers': 1,
-    'num_sources': 2,
+    'num_sources': NUM_SOURCES,  # Use the configured number of sources
     'rnn_type': 'lstm',
     'window_type': 'sqrt_hann',
 }
@@ -145,14 +158,15 @@ rnn_agent = RnnAgent(
     rnn_config=rnn_config,
     stft_config=stft_config,
     learning_rate=.001,
-    pretrained=False
+    pretrained=False,
+    num_sources=NUM_SOURCES  # Explicitly set the number of sources
 )
 # Run the training
 torch.autograd.set_detect_anomaly(True)
-rnn_agent.fit(visualize=True)
+rnn_agent.fit(visualize=False)
 
 # Create directory for plots if it doesn't exist
-plot_dir = '../models/evaluation_data/'
+plot_dir = './models/evaluation_data/'
 os.makedirs(plot_dir, exist_ok=True)
 
 # Generate plots after training
@@ -161,7 +175,7 @@ print("\nGenerating performance plots...")
 # 1. Create plot of mean reward per episode
 plt.figure(figsize=(10, 6))
 plt.plot(rnn_agent.mean_episode_reward, 'b-')
-plt.title('Mean Reward per Episode')
+plt.title(f'Mean Reward per Episode ({NUM_SOURCES} Sources)')
 plt.xlabel('Episode')
 plt.ylabel('Mean Reward')
 plt.grid(True, alpha=0.3)
@@ -172,7 +186,7 @@ print(f"Mean reward plot saved to: {plot_dir}/mean_reward_{exp_name}.png")
 # 2. Create plot of cumulative reward
 plt.figure(figsize=(10, 6))
 plt.plot(rnn_agent.cumulative_reward, 'r-')
-plt.title('Cumulative Reward')
+plt.title(f'Cumulative Reward ({NUM_SOURCES} Sources)')
 plt.xlabel('Training Step')
 plt.ylabel('Cumulative Reward')
 plt.grid(True, alpha=0.3)
@@ -191,7 +205,7 @@ for i, episode in enumerate(rnn_agent.episode_summary):
 if finished_steps:
     plt.figure(figsize=(10, 6))
     plt.plot(finished_steps, 'g-')
-    plt.title('Steps to Complete Episode')
+    plt.title(f'Steps to Complete Episode ({NUM_SOURCES} Sources)')
     plt.xlabel('Episode')
     plt.ylabel('Steps')
     plt.grid(True, alpha=0.3)
@@ -200,4 +214,3 @@ if finished_steps:
     print(f"Steps per episode plot saved to: {plot_dir}/steps_per_episode_{exp_name}.png")
 
 print("\nTraining and visualization complete!")
-

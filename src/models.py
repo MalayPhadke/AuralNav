@@ -22,7 +22,8 @@ from nussl_separation_model import SeparationModel
 
 class RnnAgent(agent.AgentBase):
     def __init__(self, env_config, dataset_config, rnn_config=None, stft_config=None, 
-                 verbose=False, autoclip_percentile=10, learning_rate=.001, pretrained=False):
+                 verbose=False, autoclip_percentile=10, learning_rate=.001, pretrained=False,
+                 num_sources=None):
         """
         Args:
             env_config (dict): Dictionary containing the audio environment config
@@ -41,8 +42,14 @@ class RnnAgent(agent.AgentBase):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print('DEVICE:', self.device)
         # Use default config if configs are not provided by user
+        # Get number of sources from environment if not specified
+        if num_sources is None and hasattr(env_config, 'get'):
+            self.num_sources = env_config.get('num_sources', 2)
+        else:
+            self.num_sources = num_sources or 2
+            
         if rnn_config is None:
-            # self.rnn_config = builders.build_recurrent_end_to_end(
+            # Build default config with specified number of sources
             self.rnn_config = builders.build_recurrent_end_to_end(
                 num_filters=512,
                 filter_length=1024,
@@ -52,15 +59,18 @@ class RnnAgent(agent.AgentBase):
                 num_layers=2,
                 bidirectional=True,
                 dropout=0.3,
-                num_sources=2,
+                num_sources=self.num_sources,  # Use dynamic source count
                 mask_activation=['sigmoid'],
                 num_audio_channels=1
             )
-            # print(f"[RnnAgent] Full self.rnn_config after DEFAULT builder: {self.rnn_config}")
         else:
-            # print(f"[RnnAgent] rnn_config PASSED TO BUILDER: {rnn_config}")
+            # If rnn_config provided, update num_sources if needed
+            if 'num_sources' not in rnn_config:
+                rnn_config['num_sources'] = self.num_sources
+            else:
+                self.num_sources = rnn_config['num_sources']
+                
             self.rnn_config = builders.build_recurrent_end_to_end(**rnn_config)
-            # print(f"[RnnAgent] Full self.rnn_config FROM BUILDER (with provided rnn_config): {self.rnn_config}")
 
         if stft_config is None:
             self.stft_diff = STFT(
@@ -82,9 +92,9 @@ class RnnAgent(agent.AgentBase):
         # Uncomment this to find backprop errors
         # torch.autograd.set_detect_anomaly(True)
 
-        # Initialize the rnn model
-        self.rnn_model = RnnSeparator(self.rnn_config).to(self.device)
-        self.rnn_model_stable = RnnSeparator(self.rnn_config).to(self.device)
+        # Initialize the rnn model with num_sources
+        self.rnn_model = RnnSeparator(self.rnn_config, num_sources=self.num_sources).to(self.device)
+        self.rnn_model_stable = RnnSeparator(self.rnn_config, num_sources=self.num_sources).to(self.device)
 
         # Load pretrained model
         if pretrained:
@@ -100,7 +110,12 @@ class RnnAgent(agent.AgentBase):
         # Initialize network layers for DQN network
         filter_length = (stft_config['num_filters'] // 2 + 1) * 2 if stft_config is not None else 514
         total_actions = self.env.action_space.n
-        network_params = {'filter_length': filter_length, 'total_actions': total_actions, 'stft_diff': self.stft_diff}
+        network_params = {
+            'filter_length': filter_length, 
+            'total_actions': total_actions, 
+            'stft_diff': self.stft_diff,
+            'num_sources': self.num_sources  # Pass num_sources to DQN
+        }
         self.q_net = DQN(network_params).to(self.device)
         self.q_net_stable = DQN(network_params).to(self.device)  # Fixed Q net
 
@@ -229,10 +244,12 @@ class RnnAgent(agent.AgentBase):
 
 
 class RnnSeparator(nn.Module):
-    def __init__(self, rnn_config, verbose=False):
+    def __init__(self, rnn_config, verbose=False, num_sources=None):
         super(RnnSeparator, self).__init__()
-        # print("[RnnSeparator] rnn_config['modules']['audio']['args'] before SeparationModel:", rnn_config.get('modules', {}).get('audio', {}).get('args')) # Commented out for now
-        self.rnn_model = SeparationModel(rnn_config, verbose=verbose)
+        # Store num_sources for reference
+        self.num_sources = num_sources
+        # Initialize SeparationModel with num_sources
+        self.rnn_model = SeparationModel(rnn_config, verbose=verbose, num_sources=num_sources)
 
     def forward(self, x):
         return self.rnn_model(x)
@@ -245,7 +262,11 @@ class DQN(nn.Module):
         returns q-values (prob dist of the action space)
 
         Args:
-            network_params (dict): Dict of network parameters
+            network_params (dict): Dict of network parameters including:
+                - filter_length: Length of the filter for STFT
+                - total_actions: Number of possible actions
+                - stft_diff: STFT transformation object
+                - num_sources: Number of audio sources to handle
 
         Returns:
             q_values (torch.Tensor): q-values 
@@ -253,7 +274,13 @@ class DQN(nn.Module):
         super(DQN, self).__init__()
 
         self.stft_diff = network_params['stft_diff']
-        self.fc = nn.Linear(9, network_params['total_actions'])
+        self.num_sources = network_params.get('num_sources', 2)  # Default to 2 if not specified
+        
+        # Adjust input size based on number of sources (3 features per source + 3 for agent info)
+        input_size = 3 * self.num_sources + 3
+        
+        # Create network layers with adjusted input size
+        self.fc = nn.Linear(input_size, network_params['total_actions'])
         self.prelu = nn.PReLU()
 
     def forward(self, output, agent_info, total_time_steps):
@@ -265,21 +292,60 @@ class DQN(nn.Module):
 
         # Get the IPD and ILD features from the stft data
         _, nt, nf, _, ns = output['mask'].shape
+        
+        # Check if the number of sources in output matches expected number
+        actual_sources = ns
+        if actual_sources != self.num_sources:
+            print(f"Warning: Mask has {actual_sources} sources but DQN expects {self.num_sources}")
+        
+        # Process audio features for each source
         output['mask'] = output['mask'].view(-1, 2, nt, nf, ns)
+        # Take max across channels (batch_size, nt, nf, ns)
         output['mask'] = output['mask'].max(dim=1)[0]
+        
+        # Extract audio features
         ipd, ild, vol = audio_processing.ipd_ild_features(stft_data)
-
         ipd = ipd.unsqueeze(-1)
         ild = ild.unsqueeze(-1)
         vol = vol.unsqueeze(-1)
-
-        ipd_means = (output['mask'] * ipd).mean(dim=[1, 2]).unsqueeze(1)
-        ild_means = (output['mask'] * ild).mean(dim=[1, 2]).unsqueeze(1)
-        vol_means = (output['mask'] * vol).mean(dim=[1, 2]).unsqueeze(1)
-        X = torch.cat([ipd_means, ild_means, vol_means], dim=1)
+        
+        # Initialize feature list
+        features = []
+        
+        # Process each source separately
+        for source_idx in range(min(ns, self.num_sources)):
+            # Get source-specific mask
+            source_mask = output['mask'][..., source_idx:source_idx+1]
+            
+            # Calculate features for this source
+            ipd_mean = (source_mask * ipd).mean(dim=[1, 2]).unsqueeze(1)
+            ild_mean = (source_mask * ild).mean(dim=[1, 2]).unsqueeze(1)
+            vol_mean = (source_mask * vol).mean(dim=[1, 2]).unsqueeze(1)
+            
+            # Add features to list
+            features.append(ipd_mean)
+            features.append(ild_mean)
+            features.append(vol_mean)
+        
+        # If we have fewer sources than expected, pad with zeros
+        missing_sources = self.num_sources - ns
+        if missing_sources > 0:
+            batch_size = output['mask'].shape[0]
+            zero_feature = torch.zeros(batch_size, 1, 1).to(ipd.device)
+            for _ in range(missing_sources):
+                features.append(zero_feature.clone())  # IPD
+                features.append(zero_feature.clone())  # ILD
+                features.append(zero_feature.clone())  # VOL
+        
+        # Concatenate all features
+        X = torch.cat(features, dim=1)
         X = X.reshape(X.shape[0], -1)
+        
+        # Add agent info
         agent_info = agent_info.view(-1, 3)
         X = torch.cat((X, agent_info), dim=1)
+        
+        # Process through network
         X = self.prelu(self.fc(X))
         q_values = F.softmax(X, dim=1)
         

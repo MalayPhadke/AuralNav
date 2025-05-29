@@ -9,13 +9,26 @@ from copy import deepcopy
 from audio_signal import AudioSignal ## original AudioSignal class from nussl
 import sys
 sys.path.append("../../")
-
 import constants
 from utils import choose_random_files
+import os
 
 # Suppress 'c' argument errors caused by room.plot()
 from matplotlib.axes._axes import _log as matplotlib_axes_logger
 matplotlib_axes_logger.setLevel('ERROR')
+
+import pygame
+
+# Pygame constants
+PYGAME_SCREEN_WIDTH = 800
+PYGAME_SCREEN_HEIGHT = 600
+BLACK = (0, 0, 0)
+WHITE = (255, 255, 255)
+RED = (255, 0, 0)
+GREEN = (0, 255, 0)
+BLUE = (0, 0, 255)
+AGENT_COLOR = BLUE
+SOURCE_COLOR = RED
 
 
 class AudioEnv(gym.Env):
@@ -32,11 +45,12 @@ class AudioEnv(gym.Env):
         step_size=1,
         acceptable_radius=.5,
         num_sources=2,
+        max_detectable_sources=None,
         degrees=np.deg2rad(30),
         reset_sources=True,
         same_config=False,
-        play_audio_on_step=False,
-        show_room_on_step=False
+        visualize_pygame=False,
+        play_audio_on_step=True
     ):
         """
         This class inherits from OpenAI Gymnasium Env and is used to simulate the agent moving in PyRoom.
@@ -53,6 +67,7 @@ class AudioEnv(gym.Env):
             step_size (float): specified step size else we programmatically assign it
             acceptable_radius (float): source is considered found/turned off if agent is within this distance of src
             num_sources (int): the number of audio sources the agent will listen to
+            max_detectable_sources (int): the maximum number of sources the agent can detect
             degrees (float): value of degrees to rotate in radians (.2618 radians = 15 degrees)
             reset_sources (bool): True if you want to choose different sources when resetting env
             source_folders_dict (Dict[str, int]): specify how many source files to choose from each folder
@@ -63,8 +78,6 @@ class AudioEnv(gym.Env):
                     }
             same_config (bool): If set to true, difficulty of env becomes easier - agent initial loc, source placement,
                                 and audio files don't change over episodes
-            play_audio_on_step (bool): If true, audio will play after every step
-            show_room_on_step (bool): If true, room will be displayed after every step
         """
         self.resample_rate = resample_rate
         self.absorption = absorption
@@ -85,11 +98,13 @@ class AudioEnv(gym.Env):
         self.acceptable_radius = acceptable_radius
         self.step_size = step_size
         self.num_sources = num_sources
+        self.max_detectable_sources = max_detectable_sources
         self.source_locs = None
         self.min_size_audio = np.inf
         self.degrees = degrees
         self.cur_angle = 0
-        
+        self.cur_step = 0
+        self.dim = len(self.room_config)
         # Define observation space
         # Using large dimensions for audio that will be updated after loading audio
         self.observation_space = spaces.Dict({
@@ -99,8 +114,101 @@ class AudioEnv(gym.Env):
         self.reset_sources = reset_sources
         self.source_folders_dict = source_folders_dict
         self.same_config = same_config
+        self.visualize_pygame = visualize_pygame
         self.play_audio_on_step = play_audio_on_step
-        self.show_room_on_step = show_room_on_step
+        print(f"DEBUG: AudioEnv __init__: play_audio_on_step={self.play_audio_on_step}, visualize_pygame={self.visualize_pygame}")
+        self.pygame_screen = None
+        self.pygame_clock = None
+        self.world_to_pixel_scale = 1.0
+        # For coordinate transformation
+        self.world_min_x = 0
+        self.world_min_y = 0
+        self.room_width_world = 0
+        self.room_height_world = 0
+        self.screen_map_offset_x = 0
+        self.screen_map_offset_y = 0
+
+        if self.visualize_pygame or self.play_audio_on_step:
+            fs = self.resample_rate
+            num_channels = self.num_channels
+            print(f"DEBUG: AudioEnv __init__: Target mixer settings: fs={fs}, channels={num_channels}")
+            os.environ['SDL_AUDIODRIVER'] = 'pulseaudio'
+            try:
+                # Set parameters for the mixer
+                pygame.mixer.pre_init(frequency=fs, channels=num_channels, buffer=512)
+                print("DEBUG: AudioEnv __init__: pygame.mixer.pre_init called.")
+
+                # Initialize all Pygame modules (including attempting to init mixer with pre_init settings)
+                pygame.init()
+                if pygame.get_init():
+                    print("DEBUG: AudioEnv __init__: pygame.init() successful.")
+                else:
+                    print("CRITICAL WARN: AudioEnv __init__: pygame.init() FAILED. Audio/Visuals will not work.")
+
+                # Check if mixer was initialized by pygame.init()
+                if pygame.mixer.get_init():
+                    print("DEBUG: AudioEnv __init__: pygame.mixer initialized successfully (likely by pygame.init() using pre_init settings).")
+                else:
+                    print("WARN: AudioEnv __init__: pygame.mixer was NOT initialized by pygame.init(). Attempting explicit pygame.mixer.init().")
+                    try:
+                        # Attempt to initialize the mixer explicitly.
+                        # It should use the parameters from pre_init.
+                        pygame.mixer.init()
+                        if pygame.mixer.get_init():
+                            print("DEBUG: AudioEnv __init__: pygame.mixer initialized successfully after explicit call to pygame.mixer.init().")
+                        else:
+                            # This case should ideally not be reached if pygame.mixer.init() didn't raise an error but still failed.
+                            print("CRITICAL WARN: AudioEnv __init__: pygame.mixer FAILED to initialize even after explicit call to pygame.mixer.init(), though no error was raised.")
+                            self.play_audio_on_step = False # Disable audio
+                    except pygame.error as e_mixer_init:
+                        print(f"CRITICAL WARN: AudioEnv __init__: Explicit pygame.mixer.init() raised an error: {e_mixer_init}")
+                        if "No such audio device" in str(e_mixer_init) or "dsp" in str(e_mixer_init):
+                            print("INFO: This 'No such audio device' error usually means Pygame cannot find a working audio output on your system.")
+                            print("INFO: Please check your system's audio configuration, ensure speakers/headphones are connected and selected as output, and consider installing audio libraries like libasound2-dev or libpulse-dev.")
+                            print("INFO: You can also try setting SDL_AUDIODRIVER (e.g., 'export SDL_AUDIODRIVER=alsa') before running the script.")
+                            print("INFO: Audio playback will be disabled for this session.")
+                        self.play_audio_on_step = False # Disable audio
+            
+            except pygame.error as e_outer:
+                # This catches errors from pre_init or the main pygame.init()
+                print(f"CRITICAL WARN: audio_env.py: Error during Pygame/Mixer initialization (pre_init or pygame.init stage): {e_outer}. Audio playback will likely be disabled.")
+                self.play_audio_on_step = False # Disable audio if outer setup fails
+                # Fallback if pygame.init() in the try block failed
+                if not pygame.get_init():
+                    print("DEBUG: AudioEnv __init__: Attempting pygame.init() again in except block as a last resort (for visualization perhaps).")
+                    pygame.init()
+                    if pygame.get_init():
+                         print("DEBUG: AudioEnv __init__: pygame.init() in except block was successful.")
+                    else:
+                         print("CRITICAL WARN: AudioEnv __init__: pygame.init() in except block FAILED.")
+
+            if self.visualize_pygame:
+                self.pygame_screen = pygame.display.set_mode((PYGAME_SCREEN_WIDTH, PYGAME_SCREEN_HEIGHT))
+                pygame.display.set_caption("Audio Environment")
+                self.pygame_clock = pygame.time.Clock()
+
+            if not self.corners:  # Shoebox room_config = [width, height]
+                self.room_width_world = self.room_config[0]
+                self.room_height_world = self.room_config[1]
+                self.world_min_x, self.world_min_y = 0, 0
+            else:  # Polygonal room_config = [[x1,y1], [x2,y2]...]
+                corners_array = np.array(self.room_config)
+                self.world_min_x = np.min(corners_array[:, 0])
+                world_max_x = np.max(corners_array[:, 0])
+                self.world_min_y = np.min(corners_array[:, 1])
+                world_max_y = np.max(corners_array[:, 1])
+                self.room_width_world = world_max_x - self.world_min_x
+                self.room_height_world = world_max_y - self.world_min_y
+            
+            if self.room_width_world <= 0 or self.room_height_world <= 0: # Check for non-positive dimensions
+                self.world_to_pixel_scale = 50.0 # Default scale e.g. 50 pixels per meter if dimensions are problematic
+            else:
+                scale_x = PYGAME_SCREEN_WIDTH / self.room_width_world
+                scale_y = PYGAME_SCREEN_HEIGHT / self.room_height_world
+                self.world_to_pixel_scale = min(scale_x, scale_y) * 0.9 # Use 90% of min scale to have some padding
+
+            self.screen_map_offset_x = (PYGAME_SCREEN_WIDTH - self.room_width_world * self.world_to_pixel_scale) / 2
+            self.screen_map_offset_y = (PYGAME_SCREEN_HEIGHT - self.room_height_world * self.world_to_pixel_scale) / 2
 
         # choose audio files as sources
         self.direct_sources = choose_random_files(self.source_folders_dict)
@@ -122,6 +230,24 @@ class AudioEnv(gym.Env):
                 """The threshold radius (acceptable_radius) must be at least step_size / 2. Else, the agent may overstep 
                 an audio source."""
             )
+
+    def _world_to_pixel(self, world_x, world_y):
+        """Converts world coordinates to Pygame pixel coordinates.
+        Assumes world Y increases upwards, Pygame Y increases downwards.
+        (self.world_min_x, self.world_min_y) is the reference bottom-left of the world area.
+        """
+        if not self.visualize_pygame:
+            return 0, 0
+        
+        # Transform x: self.world_min_x maps to self.screen_map_offset_x on screen
+        pixel_x = self.screen_map_offset_x + (world_x - self.world_min_x) * self.world_to_pixel_scale
+        
+        # Transform y: 
+        # self.world_min_y (bottom of world) maps to self.screen_map_offset_y + self.room_height_world * self.world_to_pixel_scale (bottom on screen)
+        # self.world_min_y + self.room_height_world (top of world) maps to self.screen_map_offset_y (top on screen)
+        pixel_y = self.screen_map_offset_y + ( (self.world_min_y + self.room_height_world) - world_y) * self.world_to_pixel_scale
+        
+        return int(pixel_x), int(pixel_y)
 
     def _create_room(self):
         """
@@ -149,6 +275,7 @@ class AudioEnv(gym.Env):
             self.x_max = self.room_config[0]
             self.y_max = self.room_config[1]
             self.x_min, self.y_min = 0, 0
+            
         
     def _validate_room_config(self):
         """
@@ -387,8 +514,10 @@ class AudioEnv(gym.Env):
             'step_penalty': constants.STEP_PENALTY,
             'turn_off_reward': 0,
             'closest_reward': 0,
-            'orient_penalty': 0
+            'orient_penalty': 0,
+            'completion_reward': 0
         }
+        #moving into the source of audio distance reward
         terminated = False
         truncated = False
         info = {
@@ -428,10 +557,13 @@ class AudioEnv(gym.Env):
         # Check if any source is reached
         for index, source in enumerate(self.source_locs):
             if euclidean(self.agent_loc, source) <= self.acceptable_radius:
+                print(f"source locs: {self.source_locs}, direct sources: {self.direct_sources}")
                 found_source = self.direct_sources[index]
+                
                 print(f'Agent has found source {found_source}. \nAgent loc: {self.agent_loc}, Source loc: {source}')
                 reward['turn_off_reward'] = constants.TURN_OFF_REWARD
-                
+                progress_factor = (self.num_sources - len(self.source_locs)) + 1/ self.num_sources
+                reward['completion_reward'] = progress_factor * constants.COMPLETED_PROGRESS_REWARD
                 # Add source info to the info dictionary for visualization
                 info['source_info'] = {
                     'source_file': found_source,
@@ -447,9 +579,6 @@ class AudioEnv(gym.Env):
                     data = self.room.mic_array.signals
                     audio_obs = AudioSignal(audio_data_array=data, sample_rate=self.resample_rate)
                     
-                    if self.play_audio_on_step or self.show_room_on_step:
-                        self.render(audio_obs, self.play_audio_on_step, self.show_room_on_step)
-                    
                     # Create observation
                     state_obs = np.array([*self.agent_loc, self.cur_angle], dtype=np.float32)
                     observation = {
@@ -457,14 +586,17 @@ class AudioEnv(gym.Env):
                         'state': state_obs
                     }
                     info['rewards'] = reward
+                    if self.visualize_pygame:
+                        self._render_pygame()
                     return observation, sum(reward.values()), terminated, truncated, info
                 else:
                     # Last source found
                     terminated = True
                     self.reset()
                     # Return empty observation for terminated state
+                    if self.visualize_pygame:
+                        self._render_pygame()
                     return {}, sum(reward.values()), terminated, truncated, info
-
         # If no source found this step
         self.room.compute_rir()
         self.room.simulate()
@@ -472,9 +604,6 @@ class AudioEnv(gym.Env):
         
         # Create audio observation
         audio_obs = AudioSignal(audio_data_array=data, sample_rate=self.resample_rate)
-        
-        if self.play_audio_on_step or self.show_room_on_step:
-            self.render(audio_obs, self.play_audio_on_step, self.show_room_on_step)
         
         # Calculate distance-based reward
         min_dist = euclidean_distances(
@@ -489,7 +618,110 @@ class AudioEnv(gym.Env):
         }
         
         info['rewards'] = reward
+
+        if self.play_audio_on_step:
+            self._play_current_audio()
+            
+        if self.visualize_pygame:
+            self._render_pygame()
         return observation, sum(reward.values()), terminated, truncated, info
+
+    def _play_current_audio(self):
+        if not self.play_audio_on_step:
+            return
+        if not pygame.mixer.get_init():
+            print("WARN: _play_current_audio: Pygame mixer not initialized. Skipping playback.")
+            return
+        if self.room.mic_array is None or self.room.mic_array.signals is None:
+            print("WARN: _play_current_audio: No microphone signals available. Skipping playback.")
+            return
+
+        raw_audio_data_float = self.room.mic_array.signals
+        # print(f"DEBUG: _play_current_audio: Initial self.room.mic_array.signals shape: {raw_audio_data_float.shape}, self.num_channels (agent mics): {self.num_channels}")
+
+        # --- Step 1: Ensure audio_data_float is (num_samples, actual_agent_mic_channels) ---
+        audio_data_float = None
+        if raw_audio_data_float.ndim == 1:  # Mono mic array from pyroomacoustics
+            if self.num_channels != 1:
+                print(f"WARN: _play_current_audio: Data is 1D (mono) but self.num_channels (agent mics) is {self.num_channels}. Assuming mono data from pyroom.")
+            audio_data_float = raw_audio_data_float[:, np.newaxis]  # Shape: (num_samples, 1)
+        elif raw_audio_data_float.ndim == 2:
+            if raw_audio_data_float.shape[0] == self.num_channels: # Expected (num_agent_mics, num_samples)
+                # print(f"INFO: _play_current_audio: Transposing audio data from {raw_audio_data_float.shape} to (num_samples, num_agent_mics).")
+                audio_data_float = raw_audio_data_float.T
+            elif raw_audio_data_float.shape[1] == self.num_channels: # Already (num_samples, num_agent_mics)
+                # print(f"INFO: _play_current_audio: Audio data already (num_samples, num_agent_mics) {raw_audio_data_float.shape}.")
+                audio_data_float = raw_audio_data_float
+            else:
+                print(f"WARN: _play_current_audio: Ambiguous 2D audio data shape {raw_audio_data_float.shape} for self.num_channels={self.num_channels}. Cannot determine sample/channel axes. Skipping playback.")
+                return
+        else:
+            print(f"WARN: _play_current_audio: Unexpected audio data ndim {raw_audio_data_float.ndim}. Skipping playback.")
+            return
+
+        if audio_data_float.shape[0] == 0:
+            print("WARN: _play_current_audio: audio_data_float has 0 samples after processing. Skipping playback.")
+            return
+        
+        actual_agent_mic_channels = audio_data_float.shape[1]
+        # print(f"DEBUG: _play_current_audio: Actual agent mic channels after reshape: {actual_agent_mic_channels}")
+
+        audio_data_int16 = np.int16(np.ascontiguousarray(audio_data_float) * 32767)
+
+        # --- Step 2: Adapt agent's audio channels to what the Pygame mixer is actually using ---
+        mixer_actual_num_channels = pygame.mixer.get_num_channels()
+        # print(f"DEBUG: _play_current_audio: Mixer actual channels: {mixer_actual_num_channels}, Agent mic channels: {actual_agent_mic_channels}")
+
+        final_audio_data_for_mixer = audio_data_int16
+
+        if mixer_actual_num_channels != actual_agent_mic_channels:
+            print(f"INFO: _play_current_audio: Channel count mismatch. Mixer wants {mixer_actual_num_channels}, agent data has {actual_agent_mic_channels}. Adapting...")
+            adapted_sound_data = np.zeros((audio_data_int16.shape[0], mixer_actual_num_channels), dtype=np.int16)
+
+            if actual_agent_mic_channels == 1:  # Mono agent data
+                if mixer_actual_num_channels >= 2:
+                    print("INFO: _play_current_audio: Playing mono agent data on mixer's front-left & front-right channels.")
+                    adapted_sound_data[:, 0] = audio_data_int16[:, 0]  # FL
+                    adapted_sound_data[:, 1] = audio_data_int16[:, 0]  # FR
+                elif mixer_actual_num_channels == 1:
+                    print("INFO: _play_current_audio: Playing mono agent data on mono mixer.")
+                    adapted_sound_data[:, 0] = audio_data_int16[:, 0]
+                final_audio_data_for_mixer = adapted_sound_data
+            elif actual_agent_mic_channels == 2:  # Stereo agent data
+                if mixer_actual_num_channels >= 2:
+                    print("INFO: _play_current_audio: Playing stereo agent data on mixer's front-left & front-right channels.")
+                    adapted_sound_data[:, 0] = audio_data_int16[:, 0]  # Agent Left to Mixer FL
+                    adapted_sound_data[:, 1] = audio_data_int16[:, 1]  # Agent Right to Mixer FR
+                elif mixer_actual_num_channels == 1:
+                    print("INFO: _play_current_audio: Downmixing stereo agent data to mono for mixer (averaging L/R).")
+                    adapted_sound_data[:, 0] = (audio_data_int16[:, 0] // 2 + audio_data_int16[:, 1] // 2)
+                final_audio_data_for_mixer = adapted_sound_data
+            elif actual_agent_mic_channels > 2:
+                print(f"WARN: _play_current_audio: Agent data has {actual_agent_mic_channels} channels. Attempting to map to {mixer_actual_num_channels} mixer channels by copying first available.")
+                channels_to_copy = min(actual_agent_mic_channels, mixer_actual_num_channels)
+                if channels_to_copy > 0:
+                    adapted_sound_data[:, :channels_to_copy] = audio_data_int16[:, :channels_to_copy]
+                    final_audio_data_for_mixer = adapted_sound_data
+                else:
+                    print(f"WARN: _play_current_audio: Cannot map {actual_agent_mic_channels}-channel agent data to {mixer_actual_num_channels}-channel mixer. Skipping playback.")
+                    return
+            else:
+                print(f"WARN: _play_current_audio: Unhandled case for adapting {actual_agent_mic_channels}-channel agent data to {mixer_actual_num_channels}-channel mixer. Skipping playback.")
+                return
+
+        if final_audio_data_for_mixer.shape[1] != mixer_actual_num_channels:
+            print(f"CRITICAL WARN: _play_current_audio: Mismatch persists after adaptation! Mixer wants {mixer_actual_num_channels}, final data has {final_audio_data_for_mixer.shape[1]}. Playback will likely fail.")
+            return
+        
+        # print(f"DEBUG: _play_current_audio: Final audio data for mixer - shape: {final_audio_data_for_mixer.shape}, dtype: {final_audio_data_for_mixer.dtype}")
+
+        try:
+            pygame.mixer.stop()  # Stop any currently playing sound
+            sound = pygame.sndarray.make_sound(np.ascontiguousarray(final_audio_data_for_mixer))
+            sound.play()
+            # print("DEBUG: _play_current_audio: Sound playing.")
+        except Exception as e:
+            print(f"WARN: audio_env.py: Error during pygame.sndarray.make_sound or sound.play: {e}") 
 
     def reset(self, seed=None, options=None):
         """
@@ -509,7 +741,7 @@ class AudioEnv(gym.Env):
         # Set the seed if provided
         if seed is not None:
             np.random.seed(seed)
-        
+            
         # Handle options
         removing_source = options.get('removing_source') if options else None
         same_config = options.get('same_config', self.same_config) if options else self.same_config
@@ -572,28 +804,127 @@ class AudioEnv(gym.Env):
             'sample_rate': self.resample_rate
         }
         
+        if self.play_audio_on_step:
+            self._play_current_audio()
+            
+        if self.visualize_pygame:
+            self._render_pygame()
         return observation, info
 
-    def render(self, data, play_audio, show_room):
-        """
-        Play the convolved sound using SimpleAudio.
+    def _render_pygame(self):
+        if not self.visualize_pygame or self.pygame_screen is None:
+            return
 
-        Args:
-            data (AudioSignal): if 2 mics, should be of shape (x, 2)
-            play_audio (bool): If true, audio will play
-            show_room (bool): If true, room will be displayed to user
-        """
-        if play_audio:
-            data.embed_audio(display=True)
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.close() # This will call pygame.quit() and set self.pygame_screen to None
+                self.visualize_pygame = False # Stop further rendering attempts in this session
+                return
 
-            # Show the room while the audio is playing
-            if show_room:
-                fig, ax = self.room.plot(img_order=0)
-                plt.pause(1)
+        self.pygame_screen.fill(BLACK)
 
-            plt.close()
+        # Draw room boundaries
+        if self.room_config is not None:
+            if not self.corners:  # Shoebox
+                tl_px, tl_py = self._world_to_pixel(self.world_min_x, self.world_min_y + self.room_height_world)
+                br_px, br_py = self._world_to_pixel(self.world_min_x + self.room_width_world, self.world_min_y)
+                pixel_room_width = abs(br_px - tl_px)
+                pixel_room_height = abs(br_py - tl_py)
+                rect_tl_px = min(tl_px, br_px)
+                rect_tl_py = min(tl_py, br_py)
+                pygame.draw.rect(self.pygame_screen, WHITE, (rect_tl_px, rect_tl_py, pixel_room_width, pixel_room_height), 2)
+            else:  # Polygonal
+                pixel_corners = []
+                for corner_x, corner_y in self.room_config:
+                    px, py = self._world_to_pixel(corner_x, corner_y)
+                    pixel_corners.append((px, py))
+                if len(pixel_corners) > 2:
+                    pygame.draw.polygon(self.pygame_screen, WHITE, pixel_corners, 2)
 
-        elif show_room:
-            fig, ax = self.room.plot(img_order=0)
-            plt.pause(1)
-            plt.close()
+        # Draw sources (self.source_locs) with dynamic radius based on RIR energy.
+        # The radius is calculated as follows:
+        # 1. RIR energy is computed for the source at the agent's current microphone position.
+        # 2. Energy is transformed (e.g., log1p) for better perceptual scaling.
+        # 3. Transformed energy is normalized to a [0, 1] range using APPROX_MAX_LOG_ENERGY.
+        #    This value represents the expected maximum log_energy; tune it based on observations.
+        # 4. The normalized intensity is optionally passed through a non-linear scaling (e.g., power function)
+        #    to enhance visual distinction, especially at lower intensities.
+        # 5. This scaled intensity is then mapped to a pixel radius between MIN_SOURCE_RADIUS and MAX_SOURCE_RADIUS.
+
+        if self.source_locs is not None and self.room.sources is not None and self.room.rir is not None and len(self.room.rir) > 0:
+            # MIN_SOURCE_RADIUS: Smallest pixel radius for a source. Ensures visibility.
+            MIN_SOURCE_RADIUS = 3
+            # MAX_SOURCE_RADIUS: Largest pixel radius. Defines the upper bound of visual feedback.
+            MAX_SOURCE_RADIUS = 30 # Increased for more visual range
+            # APPROX_MAX_LOG_ENERGY: Expected maximum for log1p(energy). Used for normalization.
+            # Tune this based on typical log_energy values observed when agent is very close to a source.
+            # Lowering it makes the radius more sensitive to energy changes if max observed log_energy is low.
+            APPROX_MAX_LOG_ENERGY = 1.0 # Reduced for more sensitivity
+            # INTENSITY_SCALING_EXPONENT: Exponent for non-linear scaling of normalized_intensity.
+            # Values < 1 (e.g., 0.5-0.7) make radius grow faster at lower intensities.
+            # Value = 1 means linear scaling.
+            INTENSITY_SCALING_EXPONENT = 0.7
+
+            active_source_pra_indices = {}
+            for pra_idx, pra_source in enumerate(self.room.sources):
+                pos_key = tuple(pra_source.position[:self.dim]) 
+                active_source_pra_indices[pos_key] = pra_idx
+
+            for env_src_idx, src_loc in enumerate(self.source_locs):
+                if src_loc is not None:
+                    src_px, src_py = self._world_to_pixel(src_loc[0], src_loc[1])
+                    radius = 7 # Default radius if RIR processing fails or source not mapped
+                    log_msg_reason = "default (no RIR processing triggered)"
+                    
+                    current_pos_key = tuple(src_loc[:self.dim])
+                    pra_idx_for_rir = active_source_pra_indices.get(current_pos_key)
+
+                    if pra_idx_for_rir is not None:
+                        try:
+                            if pra_idx_for_rir < len(self.room.rir[0]):
+                                rir_data = self.room.rir[0][pra_idx_for_rir]
+                                energy = np.sum(np.square(rir_data))
+                                log_energy = np.log1p(energy) # log(1+energy) for stability
+                                
+                                normalized_intensity = np.clip(log_energy / APPROX_MAX_LOG_ENERGY, 0, 1)
+                                scaled_intensity = pow(normalized_intensity, INTENSITY_SCALING_EXPONENT)
+                                
+                                new_radius = MIN_SOURCE_RADIUS + scaled_intensity * (MAX_SOURCE_RADIUS - MIN_SOURCE_RADIUS)
+                                radius = new_radius
+                                log_msg_reason = f"from RIR (E={energy:.2e}, logE={log_energy:.2f}, normI={normalized_intensity:.2f}, scaledI={scaled_intensity:.2f})"
+                                
+                                if not (MIN_SOURCE_RADIUS <= radius <= MAX_SOURCE_RADIUS + 1e-3): # Add tolerance for float comparisons
+                                     log_msg_reason += f" - WARN: radius {radius:.2f} out of range, clipped"
+                                     radius = np.clip(radius, MIN_SOURCE_RADIUS, MAX_SOURCE_RADIUS)
+                            else:
+                                log_msg_reason = f"default (pra_idx {pra_idx_for_rir} OOB for RIR len {len(self.room.rir[0])})"
+                                radius = 7
+                        except Exception as e:
+                            log_msg_reason = f"default (RIR error: {str(e)[:30]}...)"
+                            radius = 7
+                    else:
+                        log_msg_reason = "default (source not in RIR map)"
+                        radius = 7
+                    
+                    print(f"Src {env_src_idx}@({src_loc[0]:.1f},{src_loc[1]:.1f}): r={int(radius)} ({log_msg_reason})")
+                    pygame.draw.circle(self.pygame_screen, SOURCE_COLOR, (src_px, src_py), int(radius))
+
+        # Draw agent (self.agent_loc, self.cur_angle)
+        if hasattr(self, 'agent_loc') and self.agent_loc is not None:
+            agent_px, agent_py = self._world_to_pixel(self.agent_loc[0], self.agent_loc[1])
+            pygame.draw.circle(self.pygame_screen, AGENT_COLOR, (agent_px, agent_py), 10)
+            
+            line_len = 20 
+            end_x = agent_px + line_len * np.cos(self.cur_angle)
+            # Pygame's y-axis is inverted, so for standard math angle, sin component is subtracted.
+            end_y = agent_py - line_len * np.sin(self.cur_angle) 
+            pygame.draw.line(self.pygame_screen, WHITE, (agent_px, agent_py), (int(end_x), int(end_y)), 3)
+
+        pygame.display.flip()
+        if self.pygame_clock:
+            self.pygame_clock.tick(30)  # Limit to 30 FPS
+    def close(self):
+        if self.pygame_screen is not None:
+            pygame.quit()
+            self.pygame_screen = None # Mark as closed to prevent further use
+            self.pygame_clock = None
