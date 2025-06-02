@@ -1,24 +1,30 @@
 <h1 align="center">AuralNav</h1>
 
-AuralNav is an interactive environment in which agents must learn to listen in order to solve navigational tasks. The purpose of AuralNav is to facilitate reinforcement learning research in computer audition, where agents must learn to listen to the world around them to navigate.
+AuralNav is an interactive research environment designed for reinforcement learning agents that learn to navigate complex acoustic scenes. Agents are tasked with identifying, localizing, and moving towards various sound sources within a simulated room. This platform facilitates research at the intersection of computer audition, deep learning, and reinforcement learning.
 
-**Note:** Currently the focus is on audio source separation and localization.
+**Core Philosophy:** To enable agents to *learn to listen* and make intelligent decisions based on auditory input.
 
-AuralNav is built on three open source libraries: OpenAI [`gymnasium`](https://gymnasium.farama.org/) for environment and agent interaction, [`pyroomacoustics`](https://github.com/LCAV/pyroomacoustics) for ray-tracing and acoustics simulation, and [`asteroid`](https://github.com/asteroid-team/asteroid) for training deep computer audition models. AuralNav is the audio analogue of GridWorld, a simple navigation game that can be easily extended to more complex environments.
+AuralNav leverages powerful open-source libraries:
+- **OpenAI [`gymnasium`](https://gymnasium.farama.org/):** For standardized RL environment and agent interaction.
+- **[`pyroomacoustics`](https://github.com/LCAV/pyroomacoustics):** For realistic acoustic simulations, including reverberation and sound propagation using ray-tracing.
+- **[`asteroid`](https://github.com/asteroid-team/asteroid):** For state-of-the-art deep learning models for audio source separation (e.g., DPRNNTasNet).
 
-To solve one episode of AuralNav, an agent must move towards each sounding source in the auditory scene and "turn it off". The agent receives no other input than the current sound of the room. The sources are placed randomly within the room and can vary in number. The agent receives a reward for turning off a source.
+In a typical AuralNav episode, an agent receives a multi-channel audio input representing the current soundscape of the room. It must then navigate towards each active sound source and 'interact' with it (e.g., turn it off). The number and types of sources can vary, creating diverse and challenging scenarios.
 
 <br>
 
+<!-- Consider updating the image if it doesn't reflect recent visualization changes -->
 ![AuralNav Environment](otoworld.png)
 
-## Features
+## Key Features
 
-- **Deep Q-Network (DQN)** reinforcement learning algorithm with experience replay
-- **Recurrent Neural Network** for audio source separation and feature extraction
-- **Enhanced Visualization** showing agent trajectory and source detection events
-- **TensorBoard Integration** for tracking training metrics
-- **Customizable Environment** with configurable room types and source placement
+- **Advanced Audio Source Separation**: Utilizes **Asteroid's DPRNNTasNet** for high-fidelity time-domain separation of multiple overlapping sound sources.
+- **Dynamic Multi-Source Environments**: Supports a configurable number of audio sources, allowing for complex and scalable auditory scenes.
+- **Deep Q-Network (DQN) Agent**: Employs a DQN with experience replay and target networks for learning navigation policies based on auditory features.
+- **Sophisticated Auditory Feature Extraction**: A novel feature pipeline processes separated sources and the mixture to derive rich spatial and acoustic cues (IPD, ILD, Volume) for the DQN.
+- **Pygame-Powered Visualization**: Offers clear, real-time visualization of the agent's trajectory, source locations, detected sources, and environmental layout, greatly aiding in debugging and understanding agent behavior.
+- **Flexible Environment Configuration**: Easily customize room acoustics, source types, agent properties, and task objectives through configuration files.
+- **TensorBoard Integration**: Comprehensive logging of training metrics (rewards, losses, episode statistics) for monitoring and analysis.
 
 
 ## Installation 
@@ -168,6 +174,10 @@ AuralNav is an ongoing research project with several planned enhancements and di
 #### Multi-Agent Scenarios
 - **Development**: Extend to support multiple agents that can cooperate or compete in tasks requiring coordination based on auditory cues
 - **Impact**: Explores the intersection of multi-agent reinforcement learning and computer audition
+
+#### Source Matching
+- **Development**: Implement a source matching task where agents must learn to match the correct source to the correct agent
+- **Impact**: Addresses the problem of source identification and matching in multi-agent systems
 
 #### Realistic Sensor Modeling
 - **Development**: Implement more realistic sensor models that simulate the limitations of real-world microphones

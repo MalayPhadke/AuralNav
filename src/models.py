@@ -140,11 +140,14 @@ class RnnAgent(agent.AgentBase):
         """
         # Run the update only if samples >= batch_size
         if len(self.dataset.items) < self.bs:
+            logging.info(f"Not enough samples in the dataset. Current size: {len(self.dataset.items)}, batch size: {self.bs}")
             return
 
         for index, data in enumerate(self.dataloader):
             if index > self.num_updates:
                 break
+            logging.info(f"RnnAgent.update (loop index {index}): data['mix_audio_prev_state'].shape: {data['mix_audio_prev_state'].shape if 'mix_audio_prev_state' in data else 'N/A'}")
+            logging.info(f"RnnAgent.update (loop index {index}): data['mix_audio_new_state'].shape: {data['mix_audio_new_state'].shape if 'mix_audio_new_state' in data else 'N/A'}")
 
             # Get the total number of time steps
             total_time_steps = data['mix_audio_prev_state'].shape[-1]
@@ -154,17 +157,23 @@ class RnnAgent(agent.AgentBase):
             # Move to GPU
             data['mix_audio'] = data['mix_audio_prev_state'].float().view(
                 -1, 1, total_time_steps).to(self.device)
+            logging.info(f"RnnAgent.update: current_state data['mix_audio'].shape: {data['mix_audio'].shape}")
             data['action'] = data['action'].to(self.device)
             data['reward'] = data['reward'].to(self.device)
             agent_info = data['agent_info'].to(self.device)
+            logging.info(f"RnnAgent.update: agent_info.shape: {agent_info.shape}")
 
             # Get the separated sources by running through RNN separation model
             output = self.rnn_model(data)
+            logging.info(f"RnnAgent.update: output from rnn_model: keys: {output.keys() if isinstance(output, dict) else 'N/A'}, estimated_sources shape: {output.get('estimated_sources').shape if isinstance(output, dict) and output.get('estimated_sources') is not None else 'N/A'}")
             output['mix_audio'] = data['mix_audio']
 
             # Pass then through the DQN model to get q-values
             q_values = self.q_net(output, agent_info, total_time_steps)
+            logging.info(f"RnnAgent.update: q_values from self.q_net.shape: {q_values.shape}")
+            logging.info(f"RnnAgent.update: q_values before gather.shape: {q_values.shape}")
             q_values = q_values.gather(1, data['action'])
+            logging.info(f"RnnAgent.update: q_values after gather.shape: {q_values.shape}")
 
             with torch.no_grad():
                 # Now, get q-values for the next-state
@@ -174,11 +183,17 @@ class RnnAgent(agent.AgentBase):
                 # Reshape the mixture to pass through the separation model (Convert dual channels into one)
                 data['mix_audio'] = data['mix_audio_new_state'].float().view(
                     -1, 1, total_time_steps).to(self.device)
+                logging.info(f"RnnAgent.update: next_state data['mix_audio'].shape: {data['mix_audio'].shape}")
                 stable_output = self.rnn_model_stable(data)
+                logging.info(f"RnnAgent.update: stable_output from rnn_model_stable: keys: {stable_output.keys() if isinstance(stable_output, dict) else 'N/A'}, estimated_sources shape: {stable_output.get('estimated_sources').shape if isinstance(stable_output, dict) and stable_output.get('estimated_sources') is not None else 'N/A'}")
                 stable_output['mix_audio'] = data['mix_audio']
-                q_values_next = self.q_net_stable(stable_output, agent_info, total_time_steps).max(1)[0].unsqueeze(-1)
+                next_q_values = self.q_net_stable(stable_output, agent_info, total_time_steps)
+                logging.info(f"RnnAgent.update: next_q_values.shape: {next_q_values.shape}")
+                next_q_values_max = next_q_values.max(1)[0].unsqueeze(-1)
 
-            expected_q_values = data['reward'] + self.gamma * q_values_next
+            expected_q_values = data['reward'] + self.gamma * next_q_values_max
+
+            logging.info(f"RnnAgent.update: expected_q_values.shape: {expected_q_values.shape}")
 
             # Calculate loss
             loss = F.l1_loss(q_values, expected_q_values)
@@ -207,22 +222,27 @@ class RnnAgent(agent.AgentBase):
         with torch.no_grad():
             # Get the latest state from the buffer
             data = self.dataset[self.dataset.last_ptr]
-
+            logging.info(f"RnnAgent.choose_action: data['mix_audio_new_state'].shape: {data['mix_audio_new_state'].shape if 'mix_audio_new_state' in data else 'N/A'}")
+            logging.info(f"RnnAgent.choose_action: data.keys(): {data.keys()}")
             # Perform the forward pass (RNN separator => DQN)
             total_time_steps = data['mix_audio_new_state'].shape[-1]
             data['mix_audio'] = data['mix_audio_new_state'].float().view(
                 -1, 1, total_time_steps).to(self.device)
+            logging.info(f"RnnAgent.choose_action: next_state data['mix_audio'].shape: {data['mix_audio'].shape}")
             output = self.rnn_model(data)
+            logging.info(f"RnnAgent.choose_action: output from rnn_model: keys: {output.keys() if isinstance(output, dict) else 'N/A'}, estimated_sources shape: {output.get('estimated_sources').shape if isinstance(output, dict) and output.get('estimated_sources') is not None else 'N/A'}")
             output['mix_audio'] = data['mix_audio']
             agent_info = data['agent_info'].to(self.device)
+            logging.info(f"RnnAgent.choose_action: agent_info.shape: {agent_info.shape}")
 
             # action = argmax(q-values)
             q_values = self.q_net(output, agent_info, total_time_steps)
+            logging.info(f"RnnAgent.choose_action: q_values.shape: {q_values.shape}")
             action = q_values.max(1)[1].unsqueeze(-1)
             action = action[0].item()
 
             action = int(action)
-
+            logging.info(f"RnnAgent.choose_action: chosen action: {action}")
             return action
 
     def update_stable_networks(self):
@@ -252,8 +272,11 @@ class RnnSeparator(nn.Module):
         self.rnn_model = SeparationModel(rnn_config, verbose=verbose, num_sources=num_sources)
 
     def forward(self, x):
-        return self.rnn_model(x)
-
+        logging.info(f"RnnSeparator.forward: input data keys: {x.keys() if isinstance(x, dict) else 'N/A'}, input mix_audio shape: {x.get('mix_audio').shape if isinstance(x, dict) and x.get('mix_audio') is not None else 'N/A'}")
+        result = self.rnn_model(x)
+        logging.info(f"RnnSeparator.forward: output result keys: {result.keys() if isinstance(result, dict) else 'N/A'}, estimated_sources shape: {result.get('estimated_sources').shape if isinstance(result, dict) and result.get('estimated_sources') is not None else 'N/A'}")
+        logging.info(f"RnnSeparator.forward: output result shape: {result['audio'].shape}, mask shape: {result['mask'].shape}")
+        return result
 
 class DQN(nn.Module):
     def __init__(self, network_params):
@@ -284,11 +307,15 @@ class DQN(nn.Module):
         self.prelu = nn.PReLU()
 
     def forward(self, output, agent_info, total_time_steps):
+        logging.info(f"DQN.forward: input output['mix_audio'].shape: {output.get('mix_audio').shape if output.get('mix_audio') is not None else 'N/A'}")
+        logging.info(f"DQN.forward: input output['mask'].shape: {output.get('mask').shape if output.get('mask') is not None else 'N/A'}")
+        logging.info(f"DQN.forward: input agent_info.shape: {agent_info.shape}")
         # Reshape the output again to get dual channels
         # Perform short time fourier transform of this output
         _, _, nt = output['mix_audio'].shape
         output['mix_audio'] = output['mix_audio'].reshape(-1, 2, nt)
         stft_data = self.stft_diff(output['mix_audio'], direction='transform')
+        logging.info(f"DQN.forward: stft_data.shape: {stft_data.shape}")
 
         # Get the IPD and ILD features from the stft data
         _, nt, nf, _, ns = output['mask'].shape
@@ -305,6 +332,7 @@ class DQN(nn.Module):
         
         # Extract audio features
         ipd, ild, vol = audio_processing.ipd_ild_features(stft_data)
+        logging.info(f"DQN.forward: ipd.shape: {ipd.shape}, ild.shape: {ild.shape}, vol.shape: {vol.shape}")
         ipd = ipd.unsqueeze(-1)
         ild = ild.unsqueeze(-1)
         vol = vol.unsqueeze(-1)
@@ -316,11 +344,13 @@ class DQN(nn.Module):
         for source_idx in range(min(ns, self.num_sources)):
             # Get source-specific mask
             source_mask = output['mask'][..., source_idx:source_idx+1]
+            logging.info(f"DQN.forward loop (source {source_idx}): source_mask.shape: {source_mask.shape}")
             
             # Calculate features for this source
             ipd_mean = (source_mask * ipd).mean(dim=[1, 2]).unsqueeze(1)
             ild_mean = (source_mask * ild).mean(dim=[1, 2]).unsqueeze(1)
             vol_mean = (source_mask * vol).mean(dim=[1, 2]).unsqueeze(1)
+            logging.info(f"DQN.forward loop (source {source_idx}): ipd_mean.shape: {ipd_mean.shape}, ild_mean.shape: {ild_mean.shape}, vol_mean.shape: {vol_mean.shape}")
             
             # Add features to list
             features.append(ipd_mean)
@@ -337,17 +367,23 @@ class DQN(nn.Module):
                 features.append(zero_feature.clone())  # ILD
                 features.append(zero_feature.clone())  # VOL
         
+        logging.info(f"DQN.forward: features: {len(features)}")
         # Concatenate all features
         X = torch.cat(features, dim=1)
+        logging.info(f"DQN.forward: X.shape {X.shape}")
         X = X.reshape(X.shape[0], -1)
+        logging.info(f"DQN.forward: X.shape: {X.shape}")
         
         # Add agent info
+        logging.info(f"DQN.forward: agent_info.shape: {agent_info.shape}")
         agent_info = agent_info.view(-1, 3)
+        logging.info(f"DQN.forward: agent_info.shape: {agent_info.shape}")
         X = torch.cat((X, agent_info), dim=1)
-        
+        logging.info(f"DQN.forward: X.shape: {X.shape}")
         # Process through network
         X = self.prelu(self.fc(X))
         q_values = F.softmax(X, dim=1)
+        logging.debug(f"DQN.forward: final q_values.shape: {q_values.shape}")
         
         return q_values
 

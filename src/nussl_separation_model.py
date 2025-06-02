@@ -1,7 +1,7 @@
 import os
 import json
 import inspect
-
+import logging
 import torch
 from torch import nn
 import numpy as np
@@ -239,27 +239,15 @@ class SeparationModel(nn.Module):
                     for k in stats[o]: 
                         stats_desc += f"\n\t\t\t{k}: {stats[o][k]:.4f}"
 
-                print(
+                logging.debug(
                     f"{connection[1]} -> {connection[0]} \n"
                     f"\tTook inputs: {input_desc} \n"
                     f"\tProduced {output_desc} \n"
                     f"{stats_desc}"
                 )
-                
-        return {o: output[o] for o in self.output_keys}
-
-    @staticmethod
-    def load(location):
-        # Circular import
-        from ...core.migration import SafeModelLoader
-
-        safe_loader = SafeModelLoader()
-        model_dict = safe_loader.load(location, 'cpu')
-        metadata = model_dict['metadata']
-
-        model = SeparationModel(metadata['config'])
-        model.load_state_dict(model_dict['state_dict'])
-        return model, metadata
+        
+        my_output = {o: output[o] for o in self.output_keys}
+        return my_output
 
     def save(self, location, metadata=None, train_data=None, 
              val_data=None, trainer=None):

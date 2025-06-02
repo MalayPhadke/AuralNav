@@ -159,7 +159,6 @@ class AgentBase:
                     # For the first two steps (We don't have prev_state, new_state pair), then perform a random action
                     # print(step)
                     if step < 2:
-                        logging.info("Performing random action")
                         action = self.env.action_space.sample()
                     else:
                         # This is where agent will actually do something
@@ -337,6 +336,8 @@ class AgentBase:
                         f"~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ \n"
                         f"- Episode: {episode}\n"
                         f"- Won?: {won}\n"
+                        f"- Found sources: {len(found_sources)}\n"
+                        f"- Total sources: {self.num_sources}\n"
                         f"- Finished at step: {step+1}\n"
                         f"- Time taken:   {total_time:04f} \n"
                         f"- Steps/Second: {float(step+1)/total_time:04f} \n"

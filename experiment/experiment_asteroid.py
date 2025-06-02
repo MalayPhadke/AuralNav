@@ -20,7 +20,7 @@ import nussl_utils
 from datasets import BufferData
 import time
 import audio_processing
-from models import RnnAgent
+from models_asteroid import RnnAgent
 import transforms
 
 import warnings
@@ -50,12 +50,12 @@ room = room_types.ShoeBox(x_length=8, y_length=8)
 source_folders_dict = {
     '../sounds/phone/': 1,
     '../sounds/siren/': 1,
-    # Add more sources as needed:
-    # './sounds/car/': 1,
+    '../sounds/car/': 1,
+    '../sounds/samples/male/': 1,
 }
 
 # Configure number of sources for the experiment
-NUM_SOURCES = 2  # Change this to 3, 4, etc. for multi-source experiments
+NUM_SOURCES = 4  # Change this to 3, 4, etc. for multi-source experiments
 MAX_DETECTABLE = None  # Set to a number less than NUM_SOURCES to allow partial success
 
 # Set up the gym environment
@@ -68,7 +68,7 @@ env = gym.make(
     step_size=.5,
     acceptable_radius=1.0,
     absorption=1.0,
-    visualize_pygame=False,
+    visualize_pygame=True,
     play_audio_on_step=False,
     num_sources=NUM_SOURCES,
     max_detectable_sources=MAX_DETECTABLE
@@ -96,7 +96,7 @@ dataset = BufferData(
 )
 
 # define tensorboard writer, name the experiment!
-exp_name = f'multi-source-{NUM_SOURCES}-150eps'
+exp_name = f'multi-source-asteroid-{NUM_SOURCES}-150eps'
 exp_id = '{}_{}'.format(exp_name, datetime.now().strftime('%d_%m_%Y-%H_%M_%S'))
 writer = SummaryWriter('runs/{}'.format(exp_id))
 
@@ -119,7 +119,7 @@ env_config = {
 
 save_path = os.path.join(constants.MODEL_SAVE_PATH, exp_name)
 dataset_config = {
-    'batch_size': 10, 
+    'batch_size': 3, 
     'num_updates': 2, 
     'save_path': save_path
 }
@@ -127,22 +127,18 @@ dataset_config = {
 # clear save_path folder for each experiment
 utils.clear_models_folder(save_path)
 
-rnn_config = {
-    'bidirectional': True,
-    'dropout': 0.3,
-    'filter_length': 256,
-    'hidden_size': 50,
-    'hop_length': 64,
-    'mask_activation': ['softmax'],
-    'mask_complex': False,
-    'mix_key': 'mix_audio',
-    'normalization_class': 'BatchNorm',
-    'num_audio_channels': 1,
-    'num_filters': 256,
-    'num_layers': 1,
-    'num_sources': NUM_SOURCES,  # Use the configured number of sources
-    'rnn_type': 'lstm',
-    'window_type': 'sqrt_hann',
+# asteroid_config for DPRNNTasNet (using defaults from RnnAgent as a base)
+asteroid_config = {
+    'n_filters': 64,    # Encoder/decoder number of filters
+    'n_kernel': 16,     # Encoder/decoder kernel size
+    'n_repeat': 4,      # Repeats of DPRNN block in a stack
+    'n_basis': 512,     # Number of basis functions in encoder/decoder (like STFT window size)
+    'hid_size': 128,    # Hidden units in LSTM within DPRNN
+    'chunk_size': 100,  # Processing chunk size
+    'hop_size': 50,     # Hop size for chunk processing
+    'n_blocks': 8,      # Number of DPRNN blocks in a stack
+    'causal': False,
+    'mask_act': 'relu',
 }
 
 stft_config = {
@@ -155,7 +151,7 @@ stft_config = {
 rnn_agent = RnnAgent(
     env_config=env_config, 
     dataset_config=dataset_config,
-    rnn_config=rnn_config,
+    asteroid_config=asteroid_config,  # Use asteroid_config here
     stft_config=stft_config,
     learning_rate=.001,
     pretrained=False,
